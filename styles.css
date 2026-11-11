@@ -184,3 +184,21 @@ select.in { width: 100%; border: 1px solid var(--line); background: var(--card);
 /* ---- pricing deal group ---- */
 .group.money { border-color: #2e9e6b; }
 .group-t small { font-weight: 600; font-size: 11px; background: #2e9e6b; color: #fff; border-radius: 8px; padding: 2px 7px; margin-left: 6px; vertical-align: middle; }
+
+/* ---- vertical menu (replaces the bottom tabs) ---- */
+.side { position: fixed; top: 0; bottom: 0; left: 0; width: 230px; z-index: 12; background: var(--card); border-right: 1px solid var(--line); padding: calc(12px + env(safe-area-inset-top)) 8px 12px; transform: translateX(-105%); transition: transform .18s; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.side.open { transform: none; box-shadow: 0 0 30px rgba(0,0,0,.35); }
+.side-t { font-weight: 800; font-size: 17px; padding: 4px 10px 12px; color: var(--ink); }
+.side button { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; border: 0; background: none; color: var(--ink); padding: 11px 10px; border-radius: 10px; font-size: 15px; font-weight: 600; }
+.side button.on { background: var(--brand); color: #fff; }
+.side-who { margin-top: auto; padding: 12px 10px 4px; border-top: 1px solid var(--line); font-weight: 600; }
+.side-who small { color: var(--muted); font-weight: 400; }
+.shade { position: fixed; inset: 0; z-index: 11; background: rgba(0,0,0,.45); }
+.fab { bottom: calc(16px + env(safe-area-inset-bottom)); }
+.staff-card.off { opacity: .6; }
+@media (min-width: 900px) {
+  .side { transform: none; box-shadow: none; }
+  .shade, .menu-btn { display: none; }
+  body.has-side .top, body.has-side main { margin-left: 230px; }
+  body.has-side #sheet, body.has-side #viewer { left: 230px; }
+}

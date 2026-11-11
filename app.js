@@ -46,7 +46,7 @@ function demoDb() {
   let d = null;
   try { d = JSON.parse(localStorage.getItem(KEY)); } catch (e) { /* storage blocked */ }
   if (!d) d = seed();
-  d.store_files = d.store_files || []; d.activity = d.activity || []; d.store_pricing = d.store_pricing || [];
+  d.store_files = d.store_files || []; d.activity = d.activity || []; d.store_pricing = d.store_pricing || []; d.staff = d.staff || [];
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(d)); } catch (e) { /* ignore */ } };
   return {
     async init() {},
@@ -70,7 +70,7 @@ function demoDb() {
     async fileUrl(row) { const f = d.files.concat(d.store_files).find(x => x.id === row.id); const blob = await (await fetch(f.data)).blob(); return URL.createObjectURL(blob); },
     async removeFile(row, table = 'files') { d[table] = d[table].filter(x => x.id !== row.id); save(); },
     async fn() { return {}; },
-    reset() { try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ } d = seed(); d.store_files = []; d.activity = []; d.store_pricing = []; }
+    reset() { try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ } d = seed(); d.store_files = []; d.activity = []; d.store_pricing = []; d.staff = []; }
   };
 }
 
@@ -93,7 +93,7 @@ function supaDb() {
     async signOut() { await sb.auth.signOut(); },
     async setPassword(pw) { ok(await sb.auth.updateUser({ password: pw })); },
     async loadAll() {
-      const names = ['members', 'tasks', 'events', 'files', 'stores', 'store_files', 'activity', 'store_pricing'];
+      const names = ['members', 'tasks', 'events', 'files', 'stores', 'store_files', 'activity', 'store_pricing', 'staff'];
       const rs = await Promise.all(names.map(n => n === 'activity' ? sb.from(n).select('*').order('created_at', { ascending: false }).limit(100) : sb.from(n).select('*')));
       const out = {}; rs.forEach((r, i) => { out[names[i]] = ok(r); }); return out;
     },
@@ -172,8 +172,10 @@ const ACT_ICON = { store: '🏪', task_new: '🆕', task_taken: '🙋' };
 const isImage = n => /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(n || '');
 const HUES = [210, 150, 28, 280, 345, 175, 50, 240];
 const thumbUrls = new Map();
-const S = { store_pricing: [], store_files: [], activity: [], me: null, members: [], tasks: [], events: [], files: [], stores: [], tab: 'tasks', filter: 'all', sheet: null, search: '', draftComment: '' };
-const nameOf = email => { const m = S.members.find(x => x.email === email); return m ? m.name : (email || ''); };
+const S = { staff: [], role: null, menuOpen: false, store_pricing: [], store_files: [], activity: [], me: null, members: [], tasks: [], events: [], files: [], stores: [], tab: 'tasks', filter: 'all', sheet: null, search: '', draftComment: '' };
+const nameOf = email => { const m = S.members.find(x => x.email === email) || S.staff.find(x => x.email === email); return m ? m.name : (email || ''); };
+// Who is this? A partner sees everything. Staff see only orders and BOLs. Anyone else is not let in.
+const roleOf = email => S.members.some(m => m.email === email) ? 'partner' : S.staff.some(s => s.email === email && s.active) ? 'staff' : null;
 const isLate = t => t.status !== 'done' && t.due && t.due < today();
 const taskById = id => S.tasks.find(t => t.id === id);
 
@@ -196,7 +198,8 @@ async function refresh() {
   try {
     const d = await db.loadAll();
     S.members = d.members.sort((a, b) => a.name.localeCompare(b.name));
-    S.tasks = d.tasks; S.events = d.events; S.files = d.files; S.stores = d.stores; S.store_files = d.store_files || []; S.store_pricing = d.store_pricing || [];
+    S.tasks = d.tasks; S.events = d.events; S.files = d.files; S.stores = d.stores; S.store_files = d.store_files || []; S.store_pricing = d.store_pricing || []; S.staff = d.staff || [];
+    if (S.role && !roleOf(S.me)) { await db.signOut(); S.me = null; S.role = null; closeSheet(); renderLogin('You have been signed out.'); return; }
     S.activity = (d.activity || []).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
   } catch (e) { console.error(e); toast('Could not load. Check your internet.'); return; }
   renderMain();
@@ -356,10 +359,11 @@ function setOwner(id, email) {
 
 /* ---------- screens ---------- */
 function renderLogin(msg) {
-  $('#sheet').hidden = true;
+  $('#sheet').hidden = true; document.body.classList.remove('has-side');
   if (DEMO) {
     $('#app').innerHTML = `<div class="login"><h1>King Energy Office</h1><p class="muted">Practice mode. Who are you?</p>
-      ${S.members.map(m => `<button class="btn wide" data-act="demo-login" data-v="${esc(m.email)}">${esc(m.name)}</button>`).join('')}</div>`;
+      ${S.members.map(m => `<button class="btn wide" data-act="demo-login" data-v="${esc(m.email)}">${esc(m.name)}</button>`).join('')}
+      ${S.staff.filter(s => s.active).map(s => `<button class="btn wide" data-act="demo-login" data-v="${esc(s.email)}">${esc(s.name)} (staff)</button>`).join('')}</div>`;
   } else {
     $('#app').innerHTML = `<div class="login"><h1>King Energy Office</h1><p class="muted">Sign in</p>
       ${msg ? `<div class="banner">${esc(msg)}</div>` : ''}
@@ -421,20 +425,53 @@ function storeCards() {
   </div>`; }).join('');
 }
 
+/* The menu. 'partner' pages are hidden from staff here AND locked in storage. */
+const MENU = [['tasks', '✅', 'Tasks', 'partner'], ['stores', '🏪', 'Stores', 'partner'], ['orders', '⛽', 'Fuel orders', 'all'], ['bols', '🚚', 'Deliveries / BOL', 'all'], ['staff', '👥', 'Staff', 'partner']];
+const menuFor = () => MENU.filter(m => m[3] === 'all' || S.role === 'partner');
+
+function staffView() {
+  const list = S.staff.slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  return `<div class="banner">Staff only see <b>Fuel orders</b> and <b>Deliveries / BOL</b>. They cannot open tasks, stores, pricing, files or this page.</div>
+    ${list.length ? list.map(s => `<div class="card staff-card${s.active ? '' : ' off'}">
+      <div class="card-top"><span class="pill ${s.active ? 's-done' : 's-todo'}">${s.active ? 'Can sign in' : 'Turned off'}</span></div>
+      <div class="card-title">${esc(s.name)}</div><div class="card-meta"><span>✉️ ${esc(s.email)}</span>${s.added_by ? `<span>Added by ${esc(nameOf(s.added_by))}</span>` : ''}</div>
+      <p class="row" style="margin:8px 0 0"><button class="btn" data-act="staff-toggle" data-id="${s.id}">${s.active ? 'Turn off' : 'Turn back on'}</button><button class="btn danger" data-act="staff-del" data-id="${s.id}">Remove</button></p></div>`).join('')
+    : '<p class="empty">No staff yet. Add the first one below.</p>'}
+    <form id="staffForm" class="group"><div class="group-t">➕ Add a staff person</div>
+      <label class="f">Name</label><input class="in" name="name" required>
+      <label class="f">Email they will sign in with</label><input class="in" type="email" name="email" required>
+      <p></p><button class="btn go wide" type="submit">Add to staff</button>
+      <p class="muted" style="margin:8px 0 0">This puts them on the list. They also need a password: in Supabase open Authentication → Users → Add user, and use the <b>same email</b>.</p></form>`;
+}
+const comingSoon = (icon, what) => `<p class="empty" style="margin-top:40px"><span style="font-size:44px">${icon}</span><br>${what} will live here.<br>This page is being built next.</p>`;
+
 function renderMain() {
   if (!S.me) return;
+  const menu = menuFor();
+  if (!menu.some(m => m[0] === S.tab)) S.tab = menu[0][0];
+  const cur = menu.find(m => m[0] === S.tab), partner = S.role === 'partner';
   const open = S.tasks.filter(t => t.status !== 'done');
   const nLate = open.filter(isLate).length, nNobody = open.filter(t => !t.owner).length;
-  const sub = [nLate ? nLate + ' late' : '', nNobody ? nNobody + ' with no owner' : ''].filter(Boolean).join(' · ') || 'All tasks have an owner and are on time';
+  const sub = S.tab === 'tasks' ? ([nLate ? nLate + ' late' : '', nNobody ? nNobody + ' with no owner' : ''].filter(Boolean).join(' · ') || 'All tasks have an owner and are on time') : 'King Energy Office';
+  const page = S.tab === 'tasks' ? tasksView()
+    : S.tab === 'stores' ? `<input class="in" id="search" type="search" placeholder="Search stores…" value="${esc(S.search)}" style="margin-bottom:12px"><div id="storeList">${storeCards()}</div>`
+    : S.tab === 'orders' ? comingSoon('⛽', 'Fuel orders')
+    : S.tab === 'bols' ? comingSoon('🚚', 'Deliveries and BOLs')
+    : staffView();
+  const fab = S.tab === 'tasks' ? ['new-task', 'task'] : S.tab === 'stores' ? ['new-store', 'store'] : null;
+  document.body.classList.add('has-side');
   $('#app').innerHTML = `
-    <header class="top"><h1>KE Office<small>${esc(sub)}</small></h1><button data-act="refresh" aria-label="Refresh">↻</button><button data-act="bell" class="bell" aria-label="Recent changes">🔔${unseenCount() ? `<b class="badge">${unseenCount()}</b>` : ''}</button><button data-act="settings">${esc(nameOf(S.me))} ⚙</button></header>
+    <nav class="side${S.menuOpen ? ' open' : ''}"><div class="side-t">KE Office</div>
+      ${menu.map(m => `<button class="${S.tab === m[0] ? 'on' : ''}" data-act="tab" data-v="${m[0]}"><span>${m[1]}</span>${m[2]}</button>`).join('')}
+      <div class="side-who">${esc(nameOf(S.me))}<br><small>${partner ? 'Partner' : 'Staff'}</small></div></nav>
+    ${S.menuOpen ? '<div class="shade" data-act="menu-close"></div>' : ''}
+    <header class="top"><button data-act="menu" class="menu-btn" aria-label="Menu">☰</button><h1>${cur[1]} ${esc(cur[2])}<small>${esc(sub)}</small></h1><button data-act="refresh" aria-label="Refresh">↻</button>${partner ? `<button data-act="bell" class="bell" aria-label="Recent changes">🔔${unseenCount() ? `<b class="badge">${unseenCount()}</b>` : ''}</button>` : ''}<button data-act="settings">${esc(nameOf(S.me))} ⚙</button></header>
     <main>
       ${DEMO ? '<div class="banner">Practice mode: saved on this device only. Your partners cannot see it yet.</div>' : ''}
-      ${PUSH_OK && !alertsOn ? '<div class="banner">🔔 Alerts are off on this phone. <button class="btn" data-act="alert-on">Turn on</button></div>' : ''}
-      ${S.tab === 'tasks' ? tasksView() : `<input class="in" id="search" type="search" placeholder="Search stores…" value="${esc(S.search)}" style="margin-bottom:12px"><div id="storeList">${storeCards()}</div>`}
+      ${partner && PUSH_OK && !alertsOn ? '<div class="banner">🔔 Alerts are off on this phone. <button class="btn" data-act="alert-on">Turn on</button></div>' : ''}
+      ${page}
     </main>
-    <button class="fab" data-act="${S.tab === 'tasks' ? 'new-task' : 'new-store'}">+ New ${S.tab === 'tasks' ? 'task' : 'store'}</button>
-    <nav class="tabs"><button class="${S.tab === 'tasks' ? 'on' : ''}" data-act="tab" data-v="tasks">✅ Tasks</button><button class="${S.tab === 'stores' ? 'on' : ''}" data-act="tab" data-v="stores">🏪 Stores</button></nav>`;
+    ${fab ? `<button class="fab" data-act="${fab[0]}">+ New ${fab[1]}</button>` : ''}`;
 }
 
 /* ---------- sheets (full-screen pages) ---------- */
@@ -593,7 +630,7 @@ function settingsSheet() {
   return `<div class="sheet-head"><button data-act="close">← Back</button><span>Settings</span><span></span></div>
   <div class="sheet-body">
     <p>Signed in as <b>${esc(nameOf(S.me))}</b>${DEMO ? ' (practice mode)' : ' · ' + esc(S.me)}</p>
-    ${DEMO ? '' : `<label class="f">Alerts on this phone</label>
+    ${DEMO || S.role !== 'partner' ? '' : `<label class="f">Alerts on this phone</label>
     ${!PUSH_OK ? '<p class="muted">This browser cannot show alerts yet. On iPhone: add the app to your Home Screen first, open it from there, then come back here.</p>'
       : alertsOn ? '<p>🔔 Alerts are ON. You get one when a task is created, picked up, or given to you, when a store is changed, and each morning if something is due, late, or has no owner.</p><div class="row"><button class="btn" data-act="alert-test">Send me a test alert</button><button class="btn" data-act="alert-off">Turn off</button></div>'
       : '<button class="btn go wide" data-act="alert-on">🔔 Turn on alerts</button>'}`}
@@ -625,7 +662,21 @@ function readStoreForm() {
 /* ---------- clicks ---------- */
 const ACT = {
   'demo-login': async el => { await db.signIn(el.dataset.v); await start(); },
-  tab: el => { S.tab = el.dataset.v; renderMain(); window.scrollTo(0, 0); },
+  tab: el => { S.tab = el.dataset.v; S.menuOpen = false; renderMain(); window.scrollTo(0, 0); },
+  menu: () => { S.menuOpen = !S.menuOpen; renderMain(); },
+  'menu-close': () => { S.menuOpen = false; renderMain(); },
+  'staff-toggle': async el => {
+    const s = S.staff.find(x => x.id === el.dataset.id); if (!s) return;
+    s.active = !s.active; renderMain();
+    await safe(() => db.update('staff', s.id, { active: s.active }), 'Could not change it.');
+    toast(s.active ? s.name + ' can sign in again.' : s.name + ' can no longer sign in.'); refresh();
+  },
+  'staff-del': async el => {
+    const s = S.staff.find(x => x.id === el.dataset.id); if (!s) return;
+    if (!confirm('Remove ' + s.name + ' from staff? They will no longer be able to use the app.')) return;
+    S.staff = S.staff.filter(x => x.id !== s.id); renderMain();
+    await safe(() => db.remove('staff', s.id), 'Could not remove them.'); refresh();
+  },
   filter: el => { S.filter = el.dataset.v; renderMain(); },
   settings: () => openSheet({ type: 'settings' }),
   close: () => {
@@ -769,6 +820,14 @@ document.addEventListener('submit', async e => {
       return true;
     });
     await refresh(); if (saved) toast('Store saved. Your partners are being told.');
+  } else if (f.id === 'staffForm') {
+    const name = f.elements.name.value.trim(), email = f.elements.email.value.trim().toLowerCase();
+    if (!name || !email) return;
+    if (S.members.some(m => m.email === email)) { toast('That email is already a partner.'); return; }
+    if (S.staff.some(s => s.email === email)) { toast('That email is already on the staff list.'); return; }
+    const row = { id: uid(), email, name, active: true, added_by: S.me, created_at: nowIso() };
+    const okay = await safe(async () => { await db.insert('staff', row); return true; }, 'Could not add them.');
+    if (okay) { S.staff.push(row); renderMain(); toast(name + ' is on the staff list. Now make their password in Supabase.'); }
   } else if (f.id === 'pwForm') {
     await safe(async () => { await db.setPassword(f.elements.pw.value); f.reset(); toast('Password changed.'); }, 'Could not change the password.');
   }
@@ -824,13 +883,16 @@ async function checkVersion() {
 /* ---------- start ---------- */
 async function start() {
   S.me = await db.session();
-  if (DEMO) { const d = await db.loadAll(); S.members = d.members; }
+  S.role = null;
+  if (DEMO) { const d = await db.loadAll(); S.members = d.members; S.staff = d.staff || []; }
   if (!S.me) { renderLogin(); return; }
   await refresh();
-  if (!S.members.some(m => m.email === S.me)) {
+  S.role = roleOf(S.me);
+  if (!S.role) {
     const who = S.me; await db.signOut(); S.me = null;
     renderLogin(who + ' is not on the King Energy list.'); return;
   }
+  if (S.role === 'staff') { renderMain(); return; } // staff get no phone alerts and no bell
   // Show the app first. The alert check can hang on a home-screen app, so it must never hold up the screen.
   renderMain();
   checkAlerts().then(() => { if (alertsOn && !S.sheet) renderMain(); });
