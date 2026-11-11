@@ -46,7 +46,7 @@ function demoDb() {
   let d = null;
   try { d = JSON.parse(localStorage.getItem(KEY)); } catch (e) { /* storage blocked */ }
   if (!d) d = seed();
-  d.store_files = d.store_files || []; d.activity = d.activity || []; d.store_pricing = d.store_pricing || []; d.staff = d.staff || []; d.fuel_orders = d.fuel_orders || [];
+  d.store_files = d.store_files || []; d.activity = d.activity || []; d.store_pricing = d.store_pricing || []; d.staff = d.staff || []; d.fuel_orders = d.fuel_orders || []; d.deliveries = d.deliveries || [];
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(d)); } catch (e) { /* ignore */ } };
   return {
     async init() {},
@@ -59,10 +59,20 @@ function demoDb() {
       o.team_names = o.members.concat(o.staff).map(x => ({ email: x.email, name: x.name }));
       return o;
     },
-    async insert(t, row) { d[t].push({ ...row }); save(); },
+    async insert(t, row) {
+      d[t].push({ ...row });
+      if (t === 'deliveries' && row.order_id) { const o = d.fuel_orders.find(x => x.id === row.order_id); if (o) o.status = 'delivered'; }
+      save();
+    },
+    async uploadBlob(row, file) {
+      if (file.size > 400000) throw new Error('Practice mode can only keep small photos (under 400 KB). Real mode has no such limit.');
+      row.photo_data = await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = rej; fr.readAsDataURL(file); });
+    },
     async update(t, id, patch) { const r = d[t].find(x => x.id === id); if (r) Object.assign(r, patch); save(); },
     async remove(t, id) {
+      const gone = d[t].find(x => x.id === id);
       d[t] = d[t].filter(x => x.id !== id);
+      if (t === 'deliveries' && gone && gone.order_id) { const o = d.fuel_orders.find(x => x.id === gone.order_id); if (o && o.status === 'delivered') o.status = 'new'; }
       if (t === 'tasks') { d.events = d.events.filter(e => e.task_id !== id); d.files = d.files.filter(f => f.task_id !== id); }
       if (t === 'stores') { d.store_files = d.store_files.filter(f => f.store_id !== id); d.store_pricing = d.store_pricing.filter(p => p.id !== id); }
       save();
@@ -72,10 +82,10 @@ function demoDb() {
       row.data = await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = rej; fr.readAsDataURL(file); });
       d[table].push({ ...row }); save();
     },
-    async fileUrl(row) { const f = d.files.concat(d.store_files).find(x => x.id === row.id); const blob = await (await fetch(f.data)).blob(); return URL.createObjectURL(blob); },
-    async removeFile(row, table = 'files') { d[table] = d[table].filter(x => x.id !== row.id); save(); },
+    async fileUrl(row) { const f = row.data ? row : d.files.concat(d.store_files).find(x => x.id === row.id); const blob = await (await fetch(f.data)).blob(); return URL.createObjectURL(blob); },
+    async removeFile(row, table = 'files') { await this.remove(table, row.id); },
     async fn() { return {}; },
-    reset() { try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ } d = seed(); d.store_files = []; d.activity = []; d.store_pricing = []; d.staff = []; d.fuel_orders = []; }
+    reset() { try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ } d = seed(); d.store_files = []; d.activity = []; d.store_pricing = []; d.staff = []; d.fuel_orders = []; d.deliveries = []; }
   };
 }
 
@@ -98,7 +108,7 @@ function supaDb() {
     async signOut() { await sb.auth.signOut(); },
     async setPassword(pw) { ok(await sb.auth.updateUser({ password: pw })); },
     async loadAll() {
-      const names = ['members', 'tasks', 'events', 'files', 'stores', 'store_files', 'activity', 'store_pricing', 'staff', 'fuel_orders'];
+      const names = ['members', 'tasks', 'events', 'files', 'stores', 'store_files', 'activity', 'store_pricing', 'staff', 'fuel_orders', 'deliveries'];
       const [sl, tn] = await Promise.all([sb.rpc('store_list'), sb.rpc('team_names')]);
       const rs = await Promise.all(names.map(n => n === 'activity' ? sb.from(n).select('*').order('created_at', { ascending: false }).limit(100) : sb.from(n).select('*')));
       const out = {}; rs.forEach((r, i) => { out[names[i]] = ok(r); });
@@ -108,6 +118,7 @@ function supaDb() {
     async update(t, id, patch) { ok(await sb.from(t).update(patch).eq('id', id)); },
     async remove(t, id) { ok(await sb.from(t).delete().eq('id', id)); },
     async uploadFile(row, file, table = 'files') { ok(await sb.storage.from('files').upload(row.path, file)); await this.insert(table, row); },
+    async uploadBlob(row, file) { ok(await sb.storage.from('files').upload(row.photo_path, file)); },
     async fileUrl(row) { return ok(await sb.storage.from('files').createSignedUrl(row.path, 3600)).signedUrl; },
     async removeFile(row, table = 'files') { await sb.storage.from('files').remove([row.path]); await this.remove(table, row.id); },
     async fn(op, payload) {
@@ -185,11 +196,11 @@ function pricingBlock(p) {
   </div>`;
 }
 const storeDraft = s => { const d = { p: pricingDraft(s.id ? S.store_pricing.find(x => x.id === s.id) : null), extra: (s.extra || []).map(x => ({ label: x.label, value: x.value })), newFiles: [], removeFiles: [], kind: 'site', customKind: '' }; STORE_FIELDS.forEach(([k]) => { d[k] = s[k] || ''; }); return d; };
-const ACT_ICON = { order: '⛽', store: '🏪', task_new: '🆕', task_taken: '🙋' };
+const ACT_ICON = { delivery: '🚚', order: '⛽', store: '🏪', task_new: '🆕', task_taken: '🙋' };
 const isImage = n => /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(n || '');
 const HUES = [210, 150, 28, 280, 345, 175, 50, 240];
 const thumbUrls = new Map();
-const S = { orders: [], storeList: [], team: [], staff: [], role: null, menuOpen: false, store_pricing: [], store_files: [], activity: [], me: null, members: [], tasks: [], events: [], files: [], stores: [], tab: 'tasks', filter: 'all', sheet: null, search: '', draftComment: '' };
+const S = { orders: [], deliveries: [], storeList: [], team: [], staff: [], role: null, menuOpen: false, store_pricing: [], store_files: [], activity: [], me: null, members: [], tasks: [], events: [], files: [], stores: [], tab: 'tasks', filter: 'all', sheet: null, search: '', draftComment: '' };
 const nameOf = email => { const m = S.members.find(x => x.email === email) || S.staff.find(x => x.email === email) || S.team.find(x => x.email === email); return m ? m.name : (email || ''); };
 // Who is this? A partner sees everything. Staff see only orders and BOLs. Anyone else is not let in.
 const roleOf = email => S.members.some(m => m.email === email) ? 'partner' : S.staff.some(s => s.email === email && s.active) ? 'staff' : null;
@@ -216,7 +227,7 @@ async function refresh() {
     const d = await db.loadAll();
     S.members = d.members.sort((a, b) => a.name.localeCompare(b.name));
     S.tasks = d.tasks; S.events = d.events; S.files = d.files; S.stores = d.stores; S.store_files = d.store_files || []; S.store_pricing = d.store_pricing || []; S.staff = d.staff || [];
-    S.orders = d.fuel_orders || []; S.storeList = d.store_list || []; S.team = d.team_names || [];
+    S.orders = d.fuel_orders || []; S.deliveries = d.deliveries || []; S.storeList = d.store_list || []; S.team = d.team_names || [];
     if (S.role && !roleOf(S.me)) { await db.signOut(); S.me = null; S.role = null; closeSheet(); renderLogin('You have been signed out.'); return; }
     S.activity = (d.activity || []).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
   } catch (e) { console.error(e); toast('Could not load. Check your internet.'); return; }
@@ -499,7 +510,59 @@ function orderSheet(sh) {
       <p style="margin-top:32px"><button type="button" class="btn danger" data-act="order-del">Delete this order</button></p>` : ''}
   </form>`;
 }
-const comingSoon = (icon, what) => `<p class="empty" style="margin-top:40px"><span style="font-size:44px">${icon}</span><br>${what} will live here.<br>This page is being built next.</p>`;
+/* ---- deliveries / BOL (staff and partners add them; only partners change them) ---- */
+const dlvDraft = x => { const d = { order_id: (x && x.order_id) || '', store_id: (x && x.store_id) || '', store_name: (x && x.store_name) || '', day: (x && x.day) || today(), bol_number: (x && x.bol_number) || '', notes: (x && x.notes) || '', file: null, fileName: '', preview: '' }; GRADES.forEach(([k]) => { d[k] = x && Number(x[k]) ? String(Number(x[k])) : ''; }); return d; };
+const waitingOrders = () => S.orders.filter(o => o.status === 'new').sort((a, b) => (a.day || '').localeCompare(b.day || ''));
+const orderLabel = o => o.store_name + ' — ' + niceDate(o.day) + ' — ' + galText(orderTotal(o)) + ' gal';
+function readDlvForm() {
+  const f = $('#dlvForm'), d = S.sheet && S.sheet.draft; if (!f || !d) return d;
+  ['day', 'bol_number', 'notes'].concat(GRADES.map(g => g[0])).forEach(k => { if (f.elements[k]) d[k] = f.elements[k].value; });
+  return d;
+}
+function dlvCard(x) {
+  const parts = GRADES.filter(([k]) => Number(x[k]) > 0).map(([k, l]) => `<span class="tag">${l}: ${galText(x[k])}</span>`).join('');
+  return `<div class="card order-card" data-act="open-dlv" data-id="${x.id}">
+    <div class="card-top"><span class="pill s-done">BOL #${esc(x.bol_number)}</span><span class="pill">📅 ${esc(niceDate(x.day))}</span></div>
+    <div class="card-title">${esc(x.store_name)}</div>
+    <div class="tags" style="--h:150">${parts}</div>
+    <div class="card-meta"><span>⛽ ${galText(orderTotal(x))} gal</span><span>📷 Photo</span><span>✍️ ${esc(nameOf(x.created_by))}</span></div></div>`;
+}
+function dlvView() {
+  const list = S.deliveries.slice().sort((a, b) => (b.day || '').localeCompare(a.day || '') || (b.created_at || '').localeCompare(a.created_at || ''));
+  const n = waitingOrders().length;
+  return `${n ? `<div class="banner">${n} order${n === 1 ? ' is' : 's are'} waiting for delivery. Tap “+ New delivery” when the load is dropped.</div>` : ''}
+    ${list.length ? list.map(dlvCard).join('') : '<p class="empty">No deliveries yet.</p>'}`;
+}
+function dlvSheet(sh) {
+  const d = sh.draft, isNew = !sh.id, partner = S.role === 'partner', can = isNew || partner, dis = can ? '' : ' disabled';
+  const x = sh.id ? S.deliveries.find(r => r.id === sh.id) : null;
+  if (sh.id && !x) return '';
+  const orders = waitingOrders();
+  const total = GRADES.reduce((s, [k]) => s + gal(d[k]), 0);
+  return `<div class="sheet-head"><button data-act="close">${isNew ? '✕ Cancel' : '← Back'}</button><span>${isNew ? 'New delivery' : 'Delivery'}</span><span></span></div>
+  <form class="sheet-body" id="dlvForm">
+    ${!can ? '<div class="banner">Only a partner can change a delivery after it is saved.</div>' : ''}
+    ${x ? `<p class="muted">Entered by ${esc(nameOf(x.created_by))} · ${esc(niceTime(x.created_at))}</p>` : ''}
+    ${isNew ? (orders.length ? `<label class="f">Which order is this?</label><select class="in" id="dlvOrder" required><option value="">Pick the order…</option>${orders.map(o => `<option value="${o.id}"${d.order_id === o.id ? ' selected' : ''}>${esc(orderLabel(o))}</option>`).join('')}</select>`
+      : '<div class="banner">No orders are waiting. Put the order in <b>Fuel orders</b> first, then come back here.</div>')
+      : `<label class="f">Store</label><div class="in" style="background:transparent">${esc(x.store_name)}</div>`}
+    ${!isNew || d.order_id ? `
+    <label class="f">BOL number</label><input class="in" name="bol_number" value="${esc(d.bol_number)}" required${dis}>
+    <label class="f">Delivery date</label><input class="in" type="date" name="day" value="${esc(d.day)}" required${dis}>
+    <div class="group"><div class="group-t">⛽ Gallons on the BOL <small>(from the terminal)</small></div>
+      ${GRADES.map(([k, l]) => `<label class="f">${l}</label><input class="in" name="${k}" data-dgal inputmode="decimal" placeholder="0" value="${esc(d[k])}"${dis}>`).join('')}
+      <div class="total-line">Total: <b id="dlvTotal">${galText(total)}</b> gallons</div></div>
+    <label class="f">BOL photo</label>
+    ${x ? `<p><button type="button" class="btn" data-act="dlv-photo">📷 See the BOL photo</button></p>`
+      : `${d.preview ? `<img src="${d.preview}" alt="BOL photo" style="max-width:100%;border-radius:10px;margin-bottom:8px">` : ''}
+         <p><label class="btn${d.file ? '' : ' go'}">${d.file ? '📷 Retake photo' : '📷 Take or pick the BOL photo'}<input type="file" id="dlvPhoto" accept="image/*" capture="environment" hidden></label></p>
+         ${d.file ? '' : '<p class="muted">The photo is required.</p>'}`}
+    <label class="f">Notes</label><textarea class="in" name="notes"${dis}>${esc(d.notes)}</textarea>
+    ${can ? `<p></p><button class="btn go wide" type="submit">${isNew ? 'Save delivery' : 'Save changes'}</button>` : ''}
+    ${x && partner ? `<p style="margin-top:32px"><button type="button" class="btn danger" data-act="dlv-del">Delete this delivery</button></p>` : ''}` : ''}
+  </form>`;
+}
+const comingSoon = (icon, what) =>`<p class="empty" style="margin-top:40px"><span style="font-size:44px">${icon}</span><br>${what} will live here.<br>This page is being built next.</p>`;
 
 function renderMain() {
   if (!S.me || !S.role) return; // wait until we know if this is a partner or staff
@@ -512,9 +575,9 @@ function renderMain() {
   const page = S.tab === 'tasks' ? tasksView()
     : S.tab === 'stores' ? `<input class="in" id="search" type="search" placeholder="Search stores…" value="${esc(S.search)}" style="margin-bottom:12px"><div id="storeList">${storeCards()}</div>`
     : S.tab === 'orders' ? ordersView()
-    : S.tab === 'bols' ? comingSoon('🚚', 'Deliveries and BOLs')
+    : S.tab === 'bols' ? dlvView()
     : staffView();
-  const fab = S.tab === 'tasks' ? ['new-task', 'task'] : S.tab === 'stores' ? ['new-store', 'store'] : S.tab === 'orders' ? ['new-order', 'order'] : null;
+  const fab = S.tab === 'tasks' ? ['new-task', 'task'] : S.tab === 'stores' ? ['new-store', 'store'] : S.tab === 'orders' ? ['new-order', 'order'] : S.tab === 'bols' ? ['new-dlv', 'delivery'] : null;
   document.body.classList.add('has-side');
   $('#app').innerHTML = `
     <nav class="side${S.menuOpen ? ' open' : ''}"><div class="side-t">KE Office</div>
@@ -543,6 +606,7 @@ function renderSheet() {
   else if (sh.type === 'new-task') el.innerHTML = newTaskSheet(sh.draft);
   else if (sh.type === 'store') { el.innerHTML = storeSheet(sh); loadThumbs(); }
   else if (sh.type === 'order') el.innerHTML = orderSheet(sh);
+  else if (sh.type === 'dlv') el.innerHTML = dlvSheet(sh);
   else if (sh.type === 'settings') el.innerHTML = settingsSheet();
   else if (sh.type === 'activity') el.innerHTML = activitySheet();
 }
@@ -721,6 +785,15 @@ const ACT = {
   'demo-login': async el => { await db.signIn(el.dataset.v); await start(); },
   tab: el => { S.tab = el.dataset.v; S.menuOpen = false; renderMain(); window.scrollTo(0, 0); },
   menu: () => { S.menuOpen = !S.menuOpen; renderMain(); },
+  'new-dlv': () => openSheet({ type: 'dlv', id: null, draft: dlvDraft(null) }),
+  'open-dlv': el => { const x = S.deliveries.find(r => r.id === el.dataset.id); if (x) openSheet({ type: 'dlv', id: x.id, draft: dlvDraft(x) }); },
+  'dlv-photo': () => { const x = S.deliveries.find(r => r.id === S.sheet.id); if (x) openViewer({ id: x.id, name: x.photo_name || ('BOL ' + x.bol_number + '.jpg'), path: x.photo_path, data: x.photo_data }); },
+  'dlv-del': async () => {
+    const x = S.deliveries.find(r => r.id === S.sheet.id); if (!x) return;
+    if (!confirm('Delete BOL #' + x.bol_number + ' for ' + x.store_name + '? Its order goes back to waiting, and its invoice draft is deleted. This cannot be undone.')) return;
+    S.deliveries = S.deliveries.filter(r => r.id !== x.id); closeSheet(); renderMain();
+    await safe(() => db.removeFile({ id: x.id, path: x.photo_path }, 'deliveries'), 'Could not delete the delivery.'); refresh();
+  },
   'new-order': () => openSheet({ type: 'order', id: null, draft: orderDraft(null) }),
   'open-order': el => { const o = S.orders.find(x => x.id === el.dataset.id); if (o) openSheet({ type: 'order', id: o.id, draft: orderDraft(o) }); },
   'order-status': async el => {
@@ -911,6 +984,32 @@ document.addEventListener('submit', async e => {
       await safe(() => db.update('fuel_orders', old.id, base), 'The changes were NOT saved.');
       toast('Order changed.'); refresh();
     }
+  } else if (f.id === 'dlvForm') {
+    const d = readDlvForm(), isNew = !S.sheet.id, old = isNew ? null : S.deliveries.find(x => x.id === S.sheet.id);
+    if (!isNew && S.role !== 'partner') return;
+    const g = {}; GRADES.forEach(([k]) => { g[k] = gal(d[k]); });
+    const bol = (d.bol_number || '').trim();
+    if (isNew && !d.order_id) { toast('Pick the order first.'); return; }
+    if (!bol) { toast('Type the BOL number.'); return; }
+    if (!orderTotal(g)) { toast('Type the BOL gallons for at least one fuel.'); return; }
+    if (isNew && !d.file) { toast('Take the BOL photo first. It is required.'); return; }
+    const stamp = nowIso();
+    if (isNew) {
+      const o = S.orders.find(x => x.id === d.order_id); if (!o) { toast('That order is gone. Refresh and try again.'); return; }
+      const id = uid(), ext = (d.file.name.match(/\.\w+$/) || ['.jpg'])[0].toLowerCase();
+      const row = { id, order_id: o.id, store_id: o.store_id, store_name: o.store_name, day: d.day, bol_number: bol, ...g, notes: d.notes.trim(),
+        photo_path: 'bol/' + id + ext, photo_name: 'BOL ' + bol.replace(/[^\w\-]+/g, '_') + ext, created_by: S.me, created_at: stamp };
+      const btn = f.querySelector('button[type=submit]'); if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+      const okay = await safe(async () => { await db.uploadBlob(row, d.file); await db.insert('deliveries', row); return true; }, 'The delivery was NOT saved. Check your internet and try again.');
+      if (!okay) { if (btn) { btn.disabled = false; btn.textContent = 'Save delivery'; } return; }
+      closeSheet(); S.tab = 'bols';
+      toast('Delivery saved. The partners are being told.'); ping('delivery_new', { delivery_id: id }); await refresh(); setTimeout(refresh, 2500);
+    } else {
+      const base = { bol_number: bol, day: d.day, ...g, notes: d.notes.trim(), updated_by: S.me, updated_at: stamp };
+      closeSheet(); Object.assign(old, base); renderMain();
+      await safe(() => db.update('deliveries', old.id, base), 'The changes were NOT saved.');
+      toast('Delivery changed.'); refresh();
+    }
   } else if (f.id === 'staffForm') {
     const name = f.elements.name.value.trim(), email = f.elements.email.value.trim().toLowerCase();
     if (!name || !email) return;
@@ -936,6 +1035,15 @@ document.addEventListener('change', async e => {
     }
     if (S.sheet && S.sheet.id === taskId) renderSheet();
     renderMain();
+  } else if (el.id === 'dlvOrder') {
+    const d = readDlvForm(), o = S.orders.find(x => x.id === el.value);
+    d.order_id = o ? o.id : '';
+    if (o) { d.day = o.day || d.day; GRADES.forEach(([k]) => { d[k] = Number(o[k]) ? String(Number(o[k])) : ''; }); }
+    renderSheet();
+  } else if (el.id === 'dlvPhoto') {
+    const file = el.files[0]; if (!file) return;
+    const d = readDlvForm(); d.file = file; d.fileName = file.name; d.preview = URL.createObjectURL(file);
+    renderSheet();
   } else if (el.id === 'storeFileIn') {
     const d = readStoreForm(), picked = [...el.files]; let kind = d.kind || 'site';
     if (kind === '__custom') { kind = d.customKind; if (!kind) { el.value = ''; toast('Type a name for it first, then tap Add.'); return; } }
@@ -953,6 +1061,7 @@ document.addEventListener('change', async e => {
 });
 
 document.addEventListener('input', e => {
+  if (e.target.dataset.dgal !== undefined) { const f = $('#dlvForm'), t = $('#dlvTotal'); if (f && t) t.textContent = galText(GRADES.reduce((s, [k]) => s + gal(f.elements[k].value), 0)); }
   if (e.target.dataset.gal !== undefined) { const f = $('#orderForm'), t = $('#orderTotal'); if (f && t) t.textContent = galText(GRADES.reduce((s, [k]) => s + gal(f.elements[k].value), 0)); }
   else if (e.target.id === 'comment') S.draftComment = e.target.value;
   else if (e.target.id === 'search') { S.search = e.target.value; $('#storeList').innerHTML = storeCards(); }
