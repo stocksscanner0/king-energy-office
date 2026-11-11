@@ -247,3 +247,4 @@ label.chk { display: inline-flex; align-items: center; gap: 4px; margin: 6px 12p
 .pi-total { text-align: right; font-size: 14pt; margin: 18px 0 8px; border-top: 2px solid #000; padding-top: 6px; }
 .pi-total b { margin-left: 24px; }
 .pi-foot { text-align: center; margin-top: 30px; }
+.btn.wa { background: #25d366; color: #fff; border-color: #1ebe5b; text-decoration: none; display: inline-block; font-weight: 700; }

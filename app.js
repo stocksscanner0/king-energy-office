@@ -518,7 +518,7 @@ function orderSheet(sh) {
   <form class="sheet-body" id="orderForm">
     ${!can ? '<div class="banner">Only a partner can change an order after it is saved.</div>' : ''}
     ${!stores.length ? '<div class="banner">There are no stores yet. A partner needs to add a store first.</div>' : ''}
-    ${o ? `<p class="row"><span class="pill ${ORDER_PILL[o.status] || ''}">${ORDER_STATUS[o.status]}</span><span class="muted">Entered by ${esc(nameOf(o.created_by))} · ${esc(niceTime(o.created_at))}</span></p>` : ''}
+    ${o ? `<p class="row"><span class="pill ${ORDER_PILL[o.status] || ''}">${ORDER_STATUS[o.status]}</span><span class="muted">Entered by ${esc(nameOf(o.created_by))} · ${esc(niceTime(o.created_at))}</span></p><p>${waButton(orderWaText(o))}</p>` : ''}
     <label class="f">Store</label><select class="in" name="store_id" required${dis}><option value="">Pick a store…</option>${stores.map(s => `<option value="${s.id}"${d.store_id === s.id ? ' selected' : ''}>${esc(s.name)}${s.address ? ' — ' + esc(s.address) : ''}</option>`).join('')}</select>
     <label class="f">Delivery date</label><input class="in" type="date" name="day" value="${esc(d.day)}" required${dis}>
     <div class="group"><div class="group-t">⛽ Gallons</div>
@@ -1201,12 +1201,17 @@ function newTaskSheet(d) {
   </form>`;
 }
 
+const appLink = () => location.origin + location.pathname;
+const waButton = text => `<a class="btn wa" href="https://wa.me/?text=${encodeURIComponent(text)}" target="_blank" rel="noopener">💬 Send on WhatsApp</a>`;
+const taskWaText = t => `*King Energy task*\n${t.title}\nOwner: ${t.owner ? nameOf(t.owner) : 'NOBODY YET'}\nDue: ${t.due ? niceDate(t.due) : 'no date'}\nStatus: ${STATUS[t.status]}${isLate(t) ? ' (LATE)' : ''}${t.details ? '\n' + t.details : ''}\n${appLink()}`;
+const orderWaText = o => `*King Energy fuel order*\nStore: ${o.store_name}\n${orderFacts(o)}\nStatus: ${ORDER_STATUS[o.status] || o.status}\nEntered by ${nameOf(o.created_by)}\n${appLink()}`;
 function taskSheet(t) {
   if (!t) return '';
   const evs = S.events.filter(e => e.task_id === t.id).sort((a, b) => a.created_at.localeCompare(b.created_at));
   const files = S.files.filter(f => f.task_id === t.id);
   return `<div class="sheet-head"><button data-act="close">← Back</button><button data-act="share" data-id="${t.id}">Share to WhatsApp</button></div>
   <div class="sheet-body">
+    <p>${waButton(taskWaText(t))}</p>
     ${isLate(t) ? `<div class="banner" style="background:var(--red-bg);border-color:var(--red)">This task is ${esc(dueText(t))}.</div>` : ''}
     ${!t.owner && t.status !== 'done' ? '<div class="banner">🚨 Nobody owns this yet. Pick one person below.</div>' : ''}
     <input class="in title-in" data-field="title" value="${esc(t.title)}">
