@@ -695,7 +695,13 @@ function printInvoice(inv, d) {
     ? `<tr><td>${esc(l.label)}</td><td class="n">${money(l.amount)}</td></tr>`
     : `<tr><td>${esc(l.label)}</td>${type === 'fuel' ? `<td>${esc(dl.bol_number || '')}</td>` : ''}<td class="n">${galText(l.gallons)}</td><td class="n">${rate6(l.rate)}</td><td class="n">${money(l.amount)}</td></tr>`).join('')}</table>` : ''; };
   const terms = d.terms === '__custom' ? 'Custom date' : d.terms;
-  let el = $('#printArea'); if (!el) { el = document.createElement('div'); el.id = 'printArea'; document.body.appendChild(el); }
+  closeViewer();
+  const v = document.createElement('div'); v.id = 'viewer';
+  v.innerHTML = `<div class="sheet-head"><button type="button" data-act="viewer-close">← Back</button><span class="vname">${esc(inv.number)}</span><span></span></div>
+    <div class="viewer-body"><p class="row vbtns"><button type="button" class="btn go" data-act="pdf-share" disabled>Making the PDF…</button>${standalone() ? '' : '<button type="button" class="btn" data-act="pdf-print">🖨 Print</button>'}</p>
+    <div class="pi-paper"></div></div>`;
+  document.body.appendChild(v);
+  const el = $('.pi-paper', v);
   el.innerHTML = `<div class="pi">
     <div class="pi-top"><div><b class="pi-co">${esc(o.name || 'King Energy')}</b><br>${nl(o.address)}${o.phone ? '<br>' + esc(o.phone) : ''}${o.email ? '<br>' + esc(o.email) : ''}</div>
       <table class="pi-meta"><tr><td>Invoice No:</td><td>${esc(inv.number)}</td></tr><tr><td>Invoice Date:</td><td>${esc(longDate((inv.ready_at || nowIso()).slice(0, 10)))}</td></tr><tr><td>Delivery Date:</td><td>${esc(longDate(inv.day))}</td></tr>${d.po_number ? `<tr><td>P.O. No:</td><td>${esc(d.po_number)}</td></tr>` : ''}</table></div>
@@ -709,10 +715,34 @@ function printInvoice(inv, d) {
     <p><b>Payment terms:</b> Due by ${esc(longDate(d.due_date))} (${esc(terms)})</p>
     ${d.notes ? `<p>${nl(d.notes)}</p>` : ''}
     <p class="pi-foot">${esc(o.footer || 'Thank you for your business!')}</p></div>`;
-  document.body.classList.add('printing');
-  const done = () => { document.body.classList.remove('printing'); window.removeEventListener('afterprint', done); };
-  window.addEventListener('afterprint', done);
-  setTimeout(() => window.print(), 50);
+  const cur = viewing = { id: inv.id, file: null, failed: false, pdf: true };
+  const btn = () => $('[data-act=pdf-share]', v);
+  makePdf($('.pi', el), inv.number + '.pdf').then(file => {
+    if (viewing !== cur) return; cur.file = file;
+    const b = btn(); if (b) { b.disabled = false; b.textContent = '📤 Save or share PDF'; }
+  }).catch(e => { console.warn(e); cur.failed = true; const b = btn(); if (b) { b.textContent = 'Could not make the PDF'; } });
+}
+const standalone = () => (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+let pdfLib = null;
+function loadPdfLib() {
+  if (window.html2pdf) return Promise.resolve();
+  if (!pdfLib) pdfLib = new Promise((res, rej) => { const s = document.createElement('script'); s.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js'; s.onload = res; s.onerror = () => { pdfLib = null; rej(new Error('Could not load the PDF maker.')); }; document.head.appendChild(s); });
+  return pdfLib;
+}
+async function makePdf(node, name) {
+  await loadPdfLib();
+  const blob = await window.html2pdf().set({ margin: 0.3, filename: name, image: { type: 'jpeg', quality: 0.95 }, html2canvas: { scale: 2, backgroundColor: '#ffffff' }, jsPDF: { unit: 'in', format: 'letter', orientation: 'portrait' } }).from(node).outputPdf('blob');
+  return new File([blob], name, { type: 'application/pdf' });
+}
+async function sharePdf() {
+  const cur = viewing; if (!cur || !cur.file) return;
+  const f = cur.file;
+  if (navigator.canShare && navigator.canShare({ files: [f] })) {
+    try { await navigator.share({ files: [f], title: f.name }); } catch (e) { if (e.name !== 'AbortError') toast('Could not share. Try again.'); }
+    return;
+  }
+  const a = document.createElement('a'); a.href = URL.createObjectURL(f); a.download = f.name; document.body.appendChild(a); a.click(); a.remove();
+  toast('PDF saved to your downloads.');
 }
 function companyView() {
   const o = S.office || {};
@@ -1058,6 +1088,8 @@ const ACT = {
   },
   'open-file': el => { const f = S.files.find(x => x.id === el.dataset.id); if (f) openViewer(f); },
   'viewer-close': () => closeViewer(),
+  'pdf-share': () => sharePdf(),
+  'pdf-print': () => { document.body.classList.add('printing'); const done = () => { document.body.classList.remove('printing'); window.removeEventListener('afterprint', done); }; window.addEventListener('afterprint', done); window.print(); },
   'viewer-save': el => saveViewing(el),
   'del-file': async el => {
     const f = S.files.find(x => x.id === el.dataset.id);

@@ -223,10 +223,13 @@ select.in { width: 100%; border: 1px solid var(--line); background: var(--card);
 .need-pill { background: var(--red-bg, #fdecea); color: var(--red, #c62828); }
 .need-banner { background: var(--red-bg, #fdecea); border-color: var(--red, #c62828); }
 label.chk { display: inline-flex; align-items: center; gap: 4px; margin: 6px 12px 6px 0; }
-#printArea { display: none; }
+.pi-paper { background: #fff; color: #000; text-align: left; border-radius: 6px; box-shadow: 0 1px 6px rgba(0,0,0,.25); margin-top: 12px; overflow-x: auto; }
+.pi-paper .pi { min-width: 640px; }
 @media print {
-  body.printing > *:not(#printArea) { display: none !important; }
-  body.printing #printArea { display: block; }
+  body.printing > *:not(#viewer) { display: none !important; }
+  body.printing #viewer { position: static; left: 0 !important; background: #fff; }
+  body.printing #viewer .sheet-head, body.printing #viewer .vbtns { display: none !important; }
+  body.printing .pi-paper { box-shadow: none; margin: 0; }
   body.printing { background: #fff; margin: 0; }
 }
 .pi { font-family: Arial, sans-serif; color: #000; font-size: 11pt; padding: 0.4in; }
