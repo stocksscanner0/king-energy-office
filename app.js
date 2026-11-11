@@ -46,7 +46,7 @@ function demoDb() {
   let d = null;
   try { d = JSON.parse(localStorage.getItem(KEY)); } catch (e) { /* storage blocked */ }
   if (!d) d = seed();
-  d.store_files = d.store_files || []; d.activity = d.activity || [];
+  d.store_files = d.store_files || []; d.activity = d.activity || []; d.store_pricing = d.store_pricing || [];
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(d)); } catch (e) { /* ignore */ } };
   return {
     async init() {},
@@ -59,7 +59,7 @@ function demoDb() {
     async remove(t, id) {
       d[t] = d[t].filter(x => x.id !== id);
       if (t === 'tasks') { d.events = d.events.filter(e => e.task_id !== id); d.files = d.files.filter(f => f.task_id !== id); }
-      if (t === 'stores') d.store_files = d.store_files.filter(f => f.store_id !== id);
+      if (t === 'stores') { d.store_files = d.store_files.filter(f => f.store_id !== id); d.store_pricing = d.store_pricing.filter(p => p.id !== id); }
       save();
     },
     async uploadFile(row, file, table = 'files') {
@@ -70,7 +70,7 @@ function demoDb() {
     async fileUrl(row) { const f = d.files.concat(d.store_files).find(x => x.id === row.id); const blob = await (await fetch(f.data)).blob(); return URL.createObjectURL(blob); },
     async removeFile(row, table = 'files') { d[table] = d[table].filter(x => x.id !== row.id); save(); },
     async fn() { return {}; },
-    reset() { try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ } d = seed(); d.store_files = []; d.activity = []; }
+    reset() { try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ } d = seed(); d.store_files = []; d.activity = []; d.store_pricing = []; }
   };
 }
 
@@ -93,7 +93,7 @@ function supaDb() {
     async signOut() { await sb.auth.signOut(); },
     async setPassword(pw) { ok(await sb.auth.updateUser({ password: pw })); },
     async loadAll() {
-      const names = ['members', 'tasks', 'events', 'files', 'stores', 'store_files', 'activity'];
+      const names = ['members', 'tasks', 'events', 'files', 'stores', 'store_files', 'activity', 'store_pricing'];
       const rs = await Promise.all(names.map(n => n === 'activity' ? sb.from(n).select('*').order('created_at', { ascending: false }).limit(100) : sb.from(n).select('*')));
       const out = {}; rs.forEach((r, i) => { out[names[i]] = ok(r); }); return out;
     },
@@ -128,12 +128,51 @@ const kindLabel = k => { const f = KINDS.find(x => x[0] === k); return f ? f[1] 
 const kindPlain = k => kindLabel(k).replace(/^\S+\s/, '');
 const kindColor = k => KIND_COLOR[k] || '#7c3aed';
 const STORE_FIELDS = [['name', 'Store name'], ['owner_name', 'Owner or contact'], ['phone', 'Phone'], ['email', 'Email'], ['address', 'Address'], ['landlord_name', 'Landlord name'], ['landlord_phone', 'Landlord number'], ['landlord_email', 'Landlord email'], ['notes', 'Notes']];
-const storeDraft = s => { const d = { extra: (s.extra || []).map(x => ({ label: x.label, value: x.value })), newFiles: [], removeFiles: [], kind: 'site', customKind: '' }; STORE_FIELDS.forEach(([k]) => { d[k] = s[k] || ''; }); return d; };
+/* ---- pricing deal (partners only; kept in its own locked table, store_pricing, whose id is the store's id) ---- */
+const TERMS = ['Net 7', 'Net 15', 'Net 30', 'Weekly settlement', 'Due on delivery'];
+const PRICE_METHODS = ['Rack price + cents/gallon', 'Fixed selling price', 'Delivered cost + markup', 'Custom / quoted price'];
+const FREIGHT_METHODS = ['Included in fuel price', 'Pass-through actual freight', 'Fixed cents/gallon', 'Custom'];
+const PRICE_FIELDS = [['parent', 'Parent company'], ['brand', 'Brand / card network'], ['terms', 'Payment terms'], ['credit_limit', 'Credit limit ($)'], ['pricing_method', 'Pricing agreement'], ['benchmark', 'Rack / terminal benchmark'], ['fixed_price', 'Fixed selling price ($/gal)'], ['differential', 'Differential / markup ($/gal)'], ['freight_method', 'Freight arrangement'], ['freight_rate', 'Freight rate ($/gal)']];
+const PRICE_NUMS = ['credit_limit', 'fixed_price', 'differential', 'freight_rate'];
+const numText = v => { const s = String(v == null ? '' : v).replace(/[$,\s]/g, ''); return s === '' || isNaN(Number(s)) ? '' : String(Number(s)); };
+const pricingDraft = r => { const p = {}; PRICE_FIELDS.forEach(([k]) => { p[k] = r && r[k] != null ? String(r[k]) : ''; }); p.termsCustom = !!p.terms && !TERMS.includes(p.terms); return p; };
+const pricingRow = p => { const r = {}; PRICE_FIELDS.forEach(([k]) => { r[k] = PRICE_NUMS.includes(k) ? (numText(p[k]) === '' ? null : numText(p[k])) : (p[k] || '').trim(); }); return r; };
+const pricingBadNumber = p => { const bad = PRICE_FIELDS.find(([k]) => PRICE_NUMS.includes(k) && (p[k] || '').trim() !== '' && numText(p[k]) === ''); return bad ? bad[1] : ''; };
+function pricingChanges(old, row) {
+  const lines = [], o = old || {};
+  PRICE_FIELDS.forEach(([k, label]) => {
+    const norm = v => PRICE_NUMS.includes(k) ? numText(v) : String(v == null ? '' : v).trim();
+    const a = norm(o[k]), b = norm(row[k]); if (a === b) return;
+    lines.push('Pricing – ' + (!a ? label + ': ' + b : !b ? label + ': removed (was ' + a + ')' : label + ': ' + a + ' → ' + b));
+  });
+  return lines;
+}
+function pricingBlock(p) {
+  const opt = (list, cur) => list.map(v => `<option${cur === v ? ' selected' : ''}>${esc(v)}</option>`).join('');
+  const txt = (k, label, ph) => `<label class="f">${label}</label><input class="in" data-p="${k}" placeholder="${ph || ''}" value="${esc(p[k])}">`;
+  const num = (k, label, ph) => `<label class="f">${label}</label><input class="in" data-p="${k}" inputmode="decimal" placeholder="${ph || ''}" value="${esc(p[k])}">`;
+  const m = p.pricing_method, rack = m === PRICE_METHODS[0], fixed = m === PRICE_METHODS[1], cost = m === PRICE_METHODS[2];
+  return `<div class="group money"><div class="group-t">💲 Pricing deal <small>partners only</small></div>
+    ${txt('parent', 'Parent company')}
+    ${txt('brand', 'Brand / card network')}
+    <label class="f">Payment terms</label><select class="in" data-pp="terms"><option value="">Pick one…</option>${opt(TERMS, p.termsCustom ? null : p.terms)}<option value="__custom"${p.termsCustom ? ' selected' : ''}>✏️ Custom (type your own)</option></select>
+    ${p.termsCustom ? `<input class="in" data-p="terms" placeholder="Type the terms" value="${esc(p.terms)}" style="margin-top:6px">` : ''}
+    ${num('credit_limit', 'Credit limit ($)', 'like 25000')}
+    <label class="f">Pricing agreement</label><select class="in" data-p="pricing_method"><option value="">Pick one…</option>${opt(PRICE_METHODS, m)}</select>
+    ${rack ? txt('benchmark', 'Rack / terminal benchmark', 'like OPIS - terminal name') + num('differential', 'Cents on top of rack ($ per gallon)', '0.000000') : ''}
+    ${fixed ? num('fixed_price', 'Fixed selling price ($ per gallon)', '0.000000') : ''}
+    ${cost ? num('differential', 'Markup on delivered cost ($ per gallon)', '0.000000') : ''}
+    ${rack || cost ? '<p class="muted" style="margin:4px 0 0">0.010000 means one cent per gallon. 0.027500 means 2.75 cents.</p>' : ''}
+    <label class="f">Freight arrangement</label><select class="in" data-p="freight_method"><option value="">Pick one…</option>${opt(FREIGHT_METHODS, p.freight_method)}</select>
+    ${p.freight_method === 'Fixed cents/gallon' ? num('freight_rate', 'Freight rate ($ per gallon)', '0.000000') : ''}
+  </div>`;
+}
+const storeDraft = s => { const d = { p: pricingDraft(s.id ? S.store_pricing.find(x => x.id === s.id) : null), extra: (s.extra || []).map(x => ({ label: x.label, value: x.value })), newFiles: [], removeFiles: [], kind: 'site', customKind: '' }; STORE_FIELDS.forEach(([k]) => { d[k] = s[k] || ''; }); return d; };
 const ACT_ICON = { store: '🏪', task_new: '🆕', task_taken: '🙋' };
 const isImage = n => /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(n || '');
 const HUES = [210, 150, 28, 280, 345, 175, 50, 240];
 const thumbUrls = new Map();
-const S = { store_files: [], activity: [], me: null, members: [], tasks: [], events: [], files: [], stores: [], tab: 'tasks', filter: 'all', sheet: null, search: '', draftComment: '' };
+const S = { store_pricing: [], store_files: [], activity: [], me: null, members: [], tasks: [], events: [], files: [], stores: [], tab: 'tasks', filter: 'all', sheet: null, search: '', draftComment: '' };
 const nameOf = email => { const m = S.members.find(x => x.email === email); return m ? m.name : (email || ''); };
 const isLate = t => t.status !== 'done' && t.due && t.due < today();
 const taskById = id => S.tasks.find(t => t.id === id);
@@ -157,7 +196,7 @@ async function refresh() {
   try {
     const d = await db.loadAll();
     S.members = d.members.sort((a, b) => a.name.localeCompare(b.name));
-    S.tasks = d.tasks; S.events = d.events; S.files = d.files; S.stores = d.stores; S.store_files = d.store_files || [];
+    S.tasks = d.tasks; S.events = d.events; S.files = d.files; S.stores = d.stores; S.store_files = d.store_files || []; S.store_pricing = d.store_pricing || [];
     S.activity = (d.activity || []).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
   } catch (e) { console.error(e); toast('Could not load. Check your internet.'); return; }
   renderMain();
@@ -539,6 +578,7 @@ function storeSheet(sh) {
     <label class="f">Landlord number</label><input class="in" type="tel" name="landlord_phone" value="${esc(d.landlord_phone)}">
     ${sh.id && (d.landlord_phone || '').replace(/[^\d+]/g, '') ? `<p><a class="btn" href="tel:${esc(d.landlord_phone.replace(/[^\d+]/g, ''))}">📞 Call landlord</a></p>` : ''}
     <label class="f">Landlord email</label><input class="in" type="email" name="landlord_email" value="${esc(d.landlord_email)}"></div>
+    ${pricingBlock(d.p)}
     <label class="f">Store details (tanks, pumps, POS, anything)</label>
     <div id="xrows">${d.extra.map(xrowHtml).join('')}</div>
     <button type="button" class="btn" data-act="x-add">+ Add a detail</button>
@@ -574,6 +614,9 @@ function readStoreForm() {
     const pick = $('[data-x=pick]', r).value, custom = pick === '__custom', li = $('[data-x=label]', r);
     return { label: custom ? (li ? li.value.trim() : '') : pick, value: $('[data-x=value]', r).value.trim(), custom };
   });
+  f.querySelectorAll('[data-p]').forEach(i => { d.p[i.dataset.p] = i.value.trim(); });
+  const tp = $('[data-pp=terms]', f);
+  if (tp) { if (tp.value === '__custom') { if (!d.p.termsCustom) d.p.terms = ''; d.p.termsCustom = true; } else { d.p.termsCustom = false; d.p.terms = tp.value; } }
   const ks = $('#sfKind'); if (ks) d.kind = ks.value;
   const kc = $('#sfCustom'); if (kc) d.customKind = kc.value.trim();
   return d;
@@ -702,13 +745,21 @@ document.addEventListener('submit', async e => {
     const fields = {}; STORE_FIELDS.forEach(([k]) => { fields[k] = d[k]; });
     const removed = S.store_files.filter(x => d.removeFiles.includes(x.id));
     const newFiles = d.newFiles.slice();
-    const lines = storeChanges(old, fields, extra, newFiles, removed);
+    const badNum = pricingBadNumber(d.p);
+    if (badNum) { toast(badNum + ' must be a number, like 0.0275'); return; }
+    const oldP = isNew ? null : S.store_pricing.find(x => x.id === id), prow = pricingRow(d.p);
+    const plines = pricingChanges(oldP, prow);
+    const lines = storeChanges(old, fields, extra, newFiles, removed).concat(plines);
     closeSheet();
     if (!isNew && !lines.length) { toast('Nothing changed.'); return; }
     toast('Saving…');
     const saved = await safe(async () => {
       if (isNew) await db.insert('stores', { id, ...fields, extra, created_by: S.me, updated_by: S.me, created_at: stamp, updated_at: stamp });
       else await db.update('stores', id, { ...fields, extra, updated_by: S.me, updated_at: stamp });
+      if (plines.length) {
+        const pr = { ...prow, updated_by: S.me, updated_at: stamp };
+        if (oldP) await db.update('store_pricing', id, pr); else await db.insert('store_pricing', { id, ...pr });
+      }
       for (const nf of newFiles) {
         const row = { id: nf.id, store_id: id, kind: nf.kind, name: nf.name, size: nf.size, path: 'stores/' + id + '/' + nf.id + '-' + nf.name.replace(/[^\w.\-]+/g, '_'), uploaded_by: S.me, created_at: stamp };
         await db.uploadFile(row, nf.file, 'store_files');
@@ -740,7 +791,7 @@ document.addEventListener('change', async e => {
     if (kind === '__custom') { kind = d.customKind; if (!kind) { el.value = ''; toast('Type a name for it first, then tap Add.'); return; } }
     for (const file of picked) d.newFiles.push({ id: uid(), kind, name: file.name, size: file.size, file, preview: isImage(file.name) ? URL.createObjectURL(file) : '' });
     renderSheet(); toast('Added. Tap Save store to keep it.');
-  } else if (el.id === 'sfKind' || el.dataset.x === 'pick') {
+  } else if (el.id === 'sfKind' || el.dataset.x === 'pick' || el.dataset.pp || el.dataset.p === 'pricing_method' || el.dataset.p === 'freight_method') {
     readStoreForm(); renderSheet();
     if (el.id === 'sfKind' && el.value === '__custom') { const c = $('#sfCustom'); if (c) c.focus(); }
   } else if (el.dataset.field && S.sheet && S.sheet.type === 'task') {

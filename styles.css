@@ -180,3 +180,7 @@ select.in { width: 100%; border: 1px solid var(--line); background: var(--card);
 /* ---- King Energy Office: green top bar, so nobody mixes it up with the first app ---- */
 :root { --brand: #0b3d2e; }
 @media (prefers-color-scheme: dark) { :root { --brand: #082c21; } }
+
+/* ---- pricing deal group ---- */
+.group.money { border-color: #2e9e6b; }
+.group-t small { font-weight: 600; font-size: 11px; background: #2e9e6b; color: #fff; border-radius: 8px; padding: 2px 7px; margin-left: 6px; vertical-align: middle; }
