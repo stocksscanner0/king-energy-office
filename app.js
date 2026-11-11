@@ -446,7 +446,7 @@ function staffView() {
 const comingSoon = (icon, what) => `<p class="empty" style="margin-top:40px"><span style="font-size:44px">${icon}</span><br>${what} will live here.<br>This page is being built next.</p>`;
 
 function renderMain() {
-  if (!S.me) return;
+  if (!S.me || !S.role) return; // wait until we know if this is a partner or staff
   const menu = menuFor();
   if (!menu.some(m => m[0] === S.tab)) S.tab = menu[0][0];
   const cur = menu.find(m => m[0] === S.tab), partner = S.role === 'partner';
