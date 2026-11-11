@@ -83,7 +83,7 @@ function demoDb() {
       const gone = d[t].find(x => x.id === id);
       d[t] = d[t].filter(x => x.id !== id);
       if (t === 'deliveries') { const ids = d.invoices.filter(i => i.delivery_id === id).map(i => i.id); d.invoices = d.invoices.filter(i => i.delivery_id !== id); d.payment_allocations = d.payment_allocations.filter(a => !ids.includes(a.invoice_id)); }
-      if (t === 'payments') d.payment_allocations = d.payment_allocations.filter(a => a.payment_id !== id);
+      if (t === 'payments') { d.payment_allocations = d.payment_allocations.filter(a => a.payment_id !== id); d.card_settlements.forEach(c => { if (c.payment_id === id) c.payment_id = null; }); }
       if (t === 'deliveries' && gone && gone.order_id) { const o = d.fuel_orders.find(x => x.id === gone.order_id); if (o && o.status === 'delivered') o.status = 'new'; }
       if (t === 'tasks') { d.events = d.events.filter(e => e.task_id !== id); d.files = d.files.filter(f => f.task_id !== id); }
       if (t === 'stores') { d.store_files = d.store_files.filter(f => f.store_id !== id); d.store_pricing = d.store_pricing.filter(p => p.id !== id); }
@@ -474,7 +474,7 @@ function storeCards() {
 }
 
 /* The menu. 'partner' pages are hidden from staff here AND locked in storage. */
-const MENU = [['tasks', '✅', 'Tasks', 'partner'], ['stores', '🏪', 'Stores', 'partner'], ['orders', '⛽', 'Fuel orders', 'all'], ['bols', '🚚', 'Deliveries / BOL', 'all'], ['invoices', '🧾', 'Invoices', 'partner'], ['payments', '💵', 'Payments', 'partner'], ['bills', '🏭', 'Supplier bills', 'partner'], ['cards', '💳', 'Card settlements', 'partner'], ['expenses', '📒', 'Expenses', 'partner'], ['reports', '📊', 'Reports', 'partner'], ['company', '🏢', 'Company & taxes', 'partner'], ['staff', '👥', 'Staff', 'partner']];
+const MENU = [['tasks', '✅', 'Tasks', 'partner'], ['stores', '🏪', 'Stores', 'partner'], ['orders', '⛽', 'Fuel orders', 'all'], ['bols', '🚚', 'Deliveries / BOL', 'all'], ['invoices', '🧾', 'Invoices', 'partner'], ['payments', '💵', 'Payments', 'partner'], ['cards', '💳', 'Card batches', 'partner'], ['bills', '🏭', 'Supplier bills', 'partner'], ['reports', '📊', 'Reports', 'partner'], ['company', '🏢', 'Company & taxes', 'partner'], ['staff', '👥', 'Staff', 'partner']];
 const menuFor = () => MENU.filter(m => m[3] === 'all' || S.role === 'partner');
 
 function staffView() {
@@ -773,7 +773,7 @@ function companyView() {
       ${S.taxes.length ? '<button class="btn go wide" type="submit">Save taxes</button>' : ''}</form>`;
 }
 /* ---- payments (partners only) ---- */
-const PAY_METHODS = ['Check', 'ACH / bank transfer', 'Card', 'Cash', 'Other'];
+const PAY_METHODS = ['Card batches', 'Check', 'ACH / bank transfer', 'Card', 'Cash', 'Other'];
 const invPaid = (inv, skipPay) => r2(S.allocs.filter(a => a.invoice_id === inv.id && a.payment_id !== skipPay).reduce((s, a) => s + Number(a.amount), 0));
 const invBalance = (inv, skipPay) => r2(Number(inv.total || 0) - invPaid(inv, skipPay));
 const isOverdue = inv => inv.status === 'ready' && invBalance(inv) > 0.004 && inv.due_date && inv.due_date < today();
@@ -787,28 +787,31 @@ const payUsed = p => r2(S.allocs.filter(a => a.payment_id === p.id).reduce((s, a
 const payCredit = p => r2(Number(p.amount) - payUsed(p));
 function payView() {
   const ready = S.invoices.filter(i => i.status === 'ready');
-  const ids = [...new Set(ready.map(i => i.store_id).concat(S.payments.map(p => p.store_id)))];
+  const ids = [...new Set(ready.map(i => i.store_id).concat(S.payments.map(p => p.store_id), S.cards.map(c => c.store_id)))];
   const rows = ids.map(id => {
     const inv = ready.filter(i => i.store_id === id), ps = S.payments.filter(p => p.store_id === id);
-    const name = (inv[0] || ps[0] || {}).store_name || '';
-    return { id, name, owed: r2(inv.reduce((s, i) => s + Math.max(0, invBalance(i)), 0)), late: r2(inv.filter(isOverdue).reduce((s, i) => s + invBalance(i), 0)), credit: r2(ps.reduce((s, p) => s + Math.max(0, payCredit(p)), 0)) };
-  }).filter(r => r.owed > 0.004 || r.credit > 0.004).sort((a, b) => b.late - a.late || b.owed - a.owed);
+    const name = (inv[0] || ps[0] || S.cards.find(c => c.store_id === id) || {}).store_name || '';
+    return { id, name, owed: r2(inv.reduce((s, i) => s + Math.max(0, invBalance(i)), 0)), late: r2(inv.filter(isOverdue).reduce((s, i) => s + invBalance(i), 0)), credit: r2(ps.reduce((s, p) => s + Math.max(0, payCredit(p)), 0)), held: r2(S.cards.filter(c => c.store_id === id && !c.payment_id).reduce((s, c) => s + Number(c.gross || 0), 0)) };
+  }).filter(r => r.owed > 0.004 || r.credit > 0.004 || r.held > 0.004).sort((a, b) => b.late - a.late || b.owed - a.owed);
   const tot = r2(rows.reduce((s, r) => s + r.owed, 0)), late = r2(rows.reduce((s, r) => s + r.late, 0));
   const list = S.payments.slice().sort((a, b) => (b.day || '').localeCompare(a.day || '') || (b.created_at || '').localeCompare(a.created_at || ''));
   return `<h2 class="sec">Who owes us</h2>
     <div class="group money"><div class="total-line" style="margin:0;border:0;padding:0">Total owed: <b>${money(tot)}</b>${late > 0 ? ` · <b style="color:var(--red)">${money(late)} overdue</b>` : ''}</div></div>
     ${rows.length ? rows.map(r => `<div class="card order-card"><div class="card-title">${esc(r.name)}</div>
-      <div class="card-meta"><span>Owes <b>${money(r.owed)}</b></span>${r.late > 0 ? `<span style="color:var(--red)"><b>${money(r.late)} overdue</b></span>` : ''}${r.credit > 0 ? `<span>💚 ${money(r.credit)} credit</span>` : ''}</div></div>`).join('') : '<p class="empty">Nobody owes anything right now. Only invoices marked Ready count.</p>'}
+      <div class="card-meta"><span>Owes <b>${money(r.owed)}</b></span>${r.late > 0 ? `<span style="color:var(--red)"><b>${money(r.late)} overdue</b></span>` : ''}${r.credit > 0 ? `<span>💚 we owe them ${money(r.credit)}</span>` : ''}${r.held > 0 ? `<span>💳 ${money(r.held)} card batches held</span>` : ''}</div></div>`).join('') : '<p class="empty">Nobody owes anything right now. Only invoices marked Ready count.</p>'}
     <h2 class="sec">Payments (${list.length})</h2>
     ${list.length ? list.map(p => { const cr = payCredit(p); return `<div class="card order-card" data-act="open-pay" data-id="${p.id}">
-      <div class="card-top"><span class="pill s-done">${money(p.amount)}</span><span class="pill">📅 ${esc(niceDate(p.day))}</span>${cr > 0.004 ? `<span class="pill">💚 ${money(cr)} credit left</span>` : ''}</div>
+      <div class="card-top"><span class="pill s-done">${money(p.amount)}</span><span class="pill">📅 ${esc(niceDate(p.day))}</span>${cr > 0.004 ? `<span class="pill">💚 ${money(cr)} left over (we owe them)</span>` : ''}</div>
       <div class="card-title">${esc(p.store_name)}</div>
       <div class="card-meta"><span>${esc(p.method || '')}${p.reference ? ' #' + esc(p.reference) : ''}</span><span>✍️ ${esc(nameOf(p.created_by))}</span></div></div>`; }).join('') : '<p class="empty">No payments yet. Tap “+ New payment”.</p>'}`;
 }
 function payDraft(p) {
   const alloc = {}; if (p) S.allocs.filter(a => a.payment_id === p.id).forEach(a => { alloc[a.invoice_id] = String(Number(a.amount)); });
-  return { store_id: (p && p.store_id) || '', day: (p && p.day) || today(), amount: p ? String(Number(p.amount)) : '', method: (p && p.method) || 'Check', reference: (p && p.reference) || '', notes: (p && p.notes) || '', alloc };
+  const batches = p ? S.cards.filter(c => c.payment_id === p.id).map(c => c.id) : [];
+  return { store_id: (p && p.store_id) || '', day: (p && p.day) || today(), amount: p ? String(Number(p.amount)) : '', method: (p && p.method) || 'Card batches', reference: (p && p.reference) || '', notes: (p && p.notes) || '', alloc, batches };
 }
+const heldBatches = sh => S.cards.filter(c => c.store_id === sh.draft.store_id && (!c.payment_id || c.payment_id === sh.id || !S.payments.some(p => p.id === c.payment_id))).sort((a, b) => (a.day || '').localeCompare(b.day || ''));
+const batchSum = d => r2(S.cards.filter(c => d.batches.includes(c.id)).reduce((s, c) => s + Number(c.gross || 0), 0));
 function payRows(sh) {
   const d = sh.draft;
   return S.invoices.filter(i => i.status === 'ready' && i.store_id === d.store_id && (invBalance(i, sh.id) > 0.004 || d.alloc[i.id]))
@@ -829,10 +832,10 @@ function paySheet(sh) {
     <form class="sheet-body" id="payForm">
       <div class="group money"><div class="group-t">💵 ${isNew ? 'New payment' : 'Changed payment'}</div>
         <p style="font-size:22px;margin:4px 0"><b>${money(amt)}</b></p>
-        <p>From <b>${esc(st.name || '')}</b><br>${esc(d.method)}${d.reference ? ' #' + esc(d.reference) : ''} · ${esc(niceDate(d.day))}</p></div>
+        <p>From <b>${esc(st.name || '')}</b><br>${esc(d.method)}${d.method === 'Card batches' ? ' (' + d.batches.length + ')' : ''}${d.reference ? ' #' + esc(d.reference) : ''} · ${esc(niceDate(d.day))}</p></div>
       <div class="group"><div class="group-t">🧾 Goes toward</div>
         ${picked.length ? `<table class="inv-t">${picked.map(i => { const v = numOrNull(d.alloc[i.id]), after = r2(invBalance(i, sh.id) - v); return `<tr><td>${esc(i.number)}</td><td class="num"><b>${money(v)}</b></td><td class="num muted">${after <= 0.004 ? 'paid in full' : money(after) + ' still owed'}</td></tr>`; }).join('')}</table>` : '<p class="muted">No invoice picked.</p>'}
-        ${left > 0.004 ? `<p>Left as credit for ${esc(st.name || 'the store')}: <b>${money(left)}</b></p>` : ''}</div>
+        ${left > 0.004 ? `<p>Left over — we owe ${esc(st.name || 'the store')}: <b>${money(left)}</b></p>` : ''}</div>
       ${d.notes ? `<p class="muted">Notes: ${esc(d.notes)}</p>` : ''}
       <button class="btn go wide" type="submit">✅ Confirm and save</button>
       <p></p><button type="button" class="btn wide" data-act="pay-back">← Go back and change</button>
@@ -842,9 +845,11 @@ function paySheet(sh) {
   <form class="sheet-body" id="payForm">
     ${p ? `<p class="muted">Entered by ${esc(nameOf(p.created_by))} · ${esc(niceTime(p.created_at))}</p>` : ''}
     <label class="f">Store</label><select class="in" name="store_id" id="payStore" required><option value="">Pick a store…</option>${stores.map(s => `<option value="${s.id}"${d.store_id === s.id ? ' selected' : ''}>${esc(s.name)}</option>`).join('')}</select>
-    <label class="f">Amount received ($)</label><input class="in" name="amount" id="payAmount" inputmode="decimal" value="${esc(d.amount)}" placeholder="0.00" required>
-    <label class="f">Date received</label><input class="in" type="date" name="day" value="${esc(d.day)}" required>
-    <label class="f">How they paid</label><select class="in" name="method">${PAY_METHODS.map(m => `<option${d.method === m ? ' selected' : ''}>${m}</option>`).join('')}</select>
+    <label class="f">How it is paid</label><select class="in" name="method" id="payMethod">${PAY_METHODS.map(m => `<option${d.method === m ? ' selected' : ''}>${m}</option>`).join('')}</select>
+    ${d.method === 'Card batches' ? (d.store_id ? (() => { const hb = heldBatches(sh); return `<div class="group money"><div class="group-t">💳 Tick the held card batches to use</div>
+      ${hb.length ? hb.map(c => `<label class="chk" style="display:flex"><input type="checkbox" data-batch="${c.id}"${d.batches.includes(c.id) ? ' checked' : ''}> ${esc(niceDate(c.day))}${c.reference ? ' · #' + esc(c.reference) : ''} — <b>${money(c.gross)}</b></label>`).join('') : '<p class="muted">No held card batches for this store. Add them on the Card batches page.</p>'}</div>`; })() : '<p class="muted">Pick the store to see its held card batches.</p>') : ''}
+    <label class="f">${d.method === 'Card batches' ? 'Total of ticked batches ($)' : 'Amount received ($)'}</label><input class="in" name="amount" id="payAmount" inputmode="decimal" value="${esc(d.amount)}" placeholder="0.00" required${d.method === 'Card batches' ? ' readonly' : ''}>
+    <label class="f">${d.method === 'Card batches' ? 'Settlement date' : 'Date received'}</label><input class="in" type="date" name="day" value="${esc(d.day)}" required>
     <label class="f">Check or reference number (optional)</label><input class="in" name="reference" value="${esc(d.reference)}">
     ${d.store_id ? `<div class="group"><div class="group-t">🧾 Tick the invoices this payment is for</div>
       ${rows.length ? `<div class="inv-wrap"><table class="inv-t"><tr><th></th><th>Invoice</th><th>Due</th><th class="num">Owed</th><th class="num">Apply</th></tr>
@@ -871,8 +876,8 @@ const LEDGERS = {
       ['regular', 'Regular gallons', 'num'], ['premium', 'Premium gallons', 'num'], ['diesel', 'Diesel gallons', 'num'], ['kerosene', 'Kerosene gallons', 'num'],
       ['fuel_cost', 'Fuel cost ($)', 'money'], ['freight', 'Freight ($)', 'money'], ['taxes', 'Taxes and fees ($)', 'money'], ['total', 'Bill total ($) — left empty, it adds the 3 lines above', 'money'],
       ['status', 'Status', 'select', ['Unpaid', 'Paid']], ['paid_on', 'Paid on', 'date'], ['notes', 'Notes', 'area']] },
-  cards: { table: 'card_settlements', list: () => S.cards, one: 'settlement', title: 'Card settlement', fileLabel: 'Settlement report (PDF or photo)', need: 'gross',
-    fields: [['day', 'Settlement date', 'date'], ['processor', 'Card network / processor', 'text', 'Marathon'], ['store_id', 'Store (optional)', 'store'], ['gross', 'Gross card sales ($)', 'money'], ['fees', 'Fees ($)', 'money'], ['net', 'Net deposited ($) — left empty, it is gross minus fees', 'money'], ['reference', 'Reference / batch number', 'text'], ['notes', 'Notes', 'area']] },
+  cards: { table: 'card_settlements', list: () => S.cards, one: 'card batch', title: 'Card batch', fileLabel: 'Batch report (PDF or photo, optional)', need: 'gross',
+    fields: [['day', 'Batch date (the store’s business day)', 'date'], ['store_id', 'Store', 'store'], ['gross', 'Card batch amount ($)', 'money'], ['reference', 'Batch number (optional)', 'text'], ['notes', 'Notes', 'area']] },
   expenses: { table: 'expenses', list: () => S.expenses, one: 'expense', title: 'Expense', fileLabel: 'Receipt (PDF or photo)', need: 'amount',
     fields: [['day', 'Date', 'date'], ['category', 'Category', 'select', EXP_CATS], ['vendor', 'Paid to', 'text'], ['amount', 'Amount ($)', 'money'], ['method', 'How paid', 'select', PAY_METHODS], ['notes', 'Notes', 'area']] }
 };
@@ -882,7 +887,7 @@ const monthName = m => { const [y, mo] = m.split('-'); return new Date(+y, +mo -
 const billLate = b => b.status !== 'Paid' && b.due_date && b.due_date < today();
 function ledLine(k, r) {
   if (k === 'bills') return { title: (r.supplier || 'Supplier') + (r.number ? ' #' + r.number : ''), amt: r.total, pill: r.status === 'Paid' ? '<span class="pill s-done">Paid</span>' : `<span class="pill${billLate(r) ? ' need-pill' : ''}">Unpaid${billLate(r) ? ' · overdue' : ''}</span>`, meta: [r.bol_number ? 'BOL #' + r.bol_number : '', r.due_date ? 'Due ' + niceDate(r.due_date) : '', galText(orderTotal(r)) + ' gal'] };
-  if (k === 'cards') return { title: (r.processor || 'Card settlement') + (r.store_name ? ' · ' + r.store_name : ''), amt: r.net, pill: '', meta: ['Gross ' + money(r.gross), 'Fees ' + money(r.fees || 0), r.reference ? '#' + r.reference : ''] };
+  if (k === 'cards') { const p = r.payment_id && S.payments.find(x => x.id === r.payment_id); return { title: r.store_name || 'Card batch', amt: r.gross, pill: p ? '<span class="pill s-done">Used</span>' : '<span class="pill">Held</span>', meta: [r.reference ? 'Batch #' + r.reference : '', p ? 'Put toward invoices on ' + niceDate(p.day) : 'Waiting to go toward an invoice'] }; }
   return { title: (r.category || 'Expense') + (r.vendor ? ' · ' + r.vendor : ''), amt: r.amount, pill: '', meta: [r.method || ''] };
 }
 function ledgerView(k) {
@@ -890,7 +895,12 @@ function ledgerView(k) {
   const sum = f => r2(rows.reduce((s, r) => s + Number(r[f] || 0), 0));
   let top = '';
   if (k === 'bills') { const un = all.filter(b => b.status !== 'Paid'), late = un.filter(billLate); top = `We owe suppliers: <b>${money(r2(un.reduce((s, b) => s + Number(b.total || 0), 0)))}</b>${late.length ? ` · <b style="color:var(--red)">${money(r2(late.reduce((s, b) => s + Number(b.total || 0), 0)))} overdue</b>` : ''}<br>Bills this month: <b>${money(sum('total'))}</b>`; }
-  else if (k === 'cards') top = `This month: gross <b>${money(sum('gross'))}</b> · fees <b>${money(sum('fees'))}</b> · net <b>${money(sum('net'))}</b>`;
+  else if (k === 'cards') {
+    const held = {}; all.filter(c => !c.payment_id).forEach(c => { held[c.store_name || '?'] = r2((held[c.store_name || '?'] || 0) + Number(c.gross || 0)); });
+    const ht = r2(Object.values(held).reduce((a, b) => a + b, 0));
+    top = `Card money we hold now: <b>${money(ht)}</b>${ht ? '<br><small>' + Object.entries(held).map(([n, v]) => esc(n) + ' ' + money(v)).join(' · ') + '</small>' : ''}<br>Batches this month: <b>${money(sum('gross'))}</b>
+      <br><small>To use held batches on an invoice: Payments → + New payment → “Card batches”.</small>`;
+  }
   else { const cats = {}; rows.forEach(r => { cats[r.category || 'Other'] = r2((cats[r.category || 'Other'] || 0) + Number(r.amount || 0)); }); top = `This month: <b>${money(sum('amount'))}</b>${Object.keys(cats).length ? '<br><small>' + Object.entries(cats).map(([c, v]) => esc(c) + ' ' + money(v)).join(' · ') + '</small>' : ''}`; }
   return `<label class="f">Month</label><input class="in" type="month" id="ledMonth" value="${esc(m)}">
     <div class="group money"><div class="total-line" style="margin:0;border:0;padding:0">${top}</div></div>
@@ -939,7 +949,7 @@ async function saveLedger(f) {
   ['regular', 'premium', 'diesel', 'kerosene'].forEach(k => { if (k in row && row[k] == null) row[k] = 0; });
   if (d.k === 'bills' && row.total == null) { const s = (row.fuel_cost || 0) + (row.freight || 0) + (row.taxes || 0); row.total = s ? r2(s) : null; }
   if (d.k === 'bills' && row.status === 'Paid' && !row.paid_on) row.paid_on = today();
-  if (d.k === 'cards') { if (row.fees == null) row.fees = 0; if (row.net == null && row.gross != null) row.net = r2(row.gross - row.fees); const st = S.stores.find(s => s.id === row.store_id); row.store_name = st ? st.name : null; }
+  if (d.k === 'cards') { row.fees = 0; row.net = row.gross; const st = S.stores.find(s => s.id === row.store_id); if (!st) { toast('Pick the store.'); return; } row.store_name = st.name; }
   if (!row.day) { toast('Pick the date.'); return; }
   if (!(row[L.need] > 0)) { toast(d.k === 'bills' ? 'Type the bill total (or its cost lines).' : 'Type the amount.'); return; }
   const id = sh.id || uid(), stamp = nowIso();
@@ -976,7 +986,7 @@ function reportData(m) {
   const loads = inv.map(i => { const dl = S.deliveries.find(x => x.id === i.delivery_id), bol = dl ? dl.bol_number : '', b = bol && S.bills.find(x => (x.bol_number || '').trim() === String(bol).trim());
     const g = (i.lines || []).filter(l => l.type === 'fuel').reduce((a, l) => a + Number(l.gallons || 0), 0);
     return { store: i.store_name, bol, day: i.day, gal: g, sold: Number(i.total || 0), cost: b ? Number(b.total || 0) : null }; });
-  return { inv, sales, fuel: sumL('fuel'), freight: sumL('freight'), taxes: sumL('tax'), gals, totalGal: r2(Object.values(gals).reduce((a, b) => a + b, 0)), cost, cardGross: r2(cards.reduce((s, c) => s + Number(c.gross || 0), 0)), cardFees, cardNet: r2(cards.reduce((s, c) => s + Number(c.net || 0), 0)), expTotal, cats, collected, owed, weOwe, stores, loads, margin: r2(sales - cost), profit: r2(sales - cost - expTotal - cardFees) };
+  return { inv, sales, fuel: sumL('fuel'), freight: sumL('freight'), taxes: sumL('tax'), gals, totalGal: r2(Object.values(gals).reduce((a, b) => a + b, 0)), cost, cardGross: r2(cards.reduce((s, c) => s + Number(c.gross || 0), 0)), cardFees, cardNet: r2(cards.reduce((s, c) => s + Number(c.net || 0), 0)), expTotal, cats, collected, owed, weOwe, stores, loads, held: r2(S.cards.filter(c => !c.payment_id).reduce((s, c) => s + Number(c.gross || 0), 0)), margin: r2(sales - cost), profit: r2(sales - cost - expTotal - cardFees) };
 }
 function reportHtml(m) {
   const R = reportData(m), row = (a, b, strong) => `<tr><td>${a}</td><td class="num">${strong ? '<b>' + b + '</b>' : b}</td></tr>`;
@@ -986,18 +996,16 @@ function reportHtml(m) {
       ${row('Invoices', R.inv.length)}${row('Gallons sold', galText(R.totalGal))}${GRADES.filter(([k]) => R.gals[k] > 0).map(([k, l]) => row('&nbsp;&nbsp;' + l, galText(R.gals[k]))).join('')}
       ${row('Fuel', money(R.fuel))}${row('Freight billed', money(R.freight))}${row('Taxes and fees billed', money(R.taxes))}${row('Total invoiced', money(R.sales), 1)}
       <tr class="inv-h"><td colspan="2">Costs</td></tr>
-      ${row('Supplier bills', money(R.cost))}${row('Card fees', money(R.cardFees))}${row('Expenses', money(R.expTotal))}
-      ${Object.entries(R.cats).map(([c, v]) => row('&nbsp;&nbsp;' + esc(c), money(v))).join('')}
-      <tr class="inv-h"><td colspan="2">Result</td></tr>
-      ${row('Invoiced minus supplier bills', money(R.margin), 1)}${row('Per gallon', R.totalGal ? '$' + (R.margin / R.totalGal).toFixed(4) : '—')}
-      <tr class="inv-total"><td>Estimated profit</td><td class="num">${money(R.profit)}</td></tr>
+      ${row('Supplier bills (World Fuel)', money(R.cost))}
+      <tr class="inv-total"><td>Margin (invoiced minus supplier bills)</td><td class="num">${money(R.margin)}</td></tr>
+      ${row('Margin per gallon', R.totalGal ? '$' + (R.margin / R.totalGal).toFixed(4) : '—')}
       <tr class="inv-h"><td colspan="2">Money in and out</td></tr>
-      ${row('Payments received this month', money(R.collected))}${row('Card settlements (net)', money(R.cardNet))}${row('Stores owe us now', money(R.owed), 1)}${row('We owe suppliers now', money(R.weOwe), 1)}
+      ${row('Card batches received this month', money(R.cardGross))}${row('Paid toward invoices this month', money(R.collected))}${row('Card money we hold now (not used yet)', money(R.held), 1)}${row('Stores owe us now', money(R.owed), 1)}${row('We owe suppliers now', money(R.weOwe), 1)}
     </table>
     ${Object.keys(R.stores).length ? `<h3 class="sec">By store</h3><table class="inv-t"><tr><th>Store</th><th class="num">Gallons</th><th class="num">Invoiced</th></tr>${Object.entries(R.stores).map(([n, s]) => `<tr><td>${esc(n)}</td><td class="num">${galText(s.gal)}</td><td class="num">${money(s.sales)}</td></tr>`).join('')}</table>` : ''}
     ${R.loads.length ? `<h3 class="sec">Each load: sold vs. supplier bill</h3><table class="inv-t"><tr><th>Load</th><th class="num">Sold</th><th class="num">Cost</th><th class="num">Margin</th></tr>${R.loads.map(l => `<tr><td>${esc(l.store)}<br><small>BOL #${esc(l.bol)} · ${esc(niceDate(l.day))} · ${galText(l.gal)} gal</small></td><td class="num">${money(l.sold)}</td><td class="num">${l.cost == null ? '<small>no bill yet</small>' : money(l.cost)}</td><td class="num">${l.cost == null ? '—' : '<b>' + money(r2(l.sold - l.cost)) + '</b>' + (l.gal ? '<br><small>$' + ((l.sold - l.cost) / l.gal).toFixed(4) + '/gal</small>' : '')}</td></tr>`).join('')}</table>
       <p class="muted">A load is matched to a supplier bill by its BOL number.</p>` : ''}
-    <p class="muted">Profit is an estimate: invoiced minus supplier bills, card fees and expenses for the month. Taxes are on both sides, so they cancel out.</p></div>`;
+    <p class="muted">Margin = what we invoiced minus the supplier bills for the month. Freight and taxes are billed to the stores and are on the supplier bills too, so they mostly cancel out.</p></div>`;
 }
 function reportView() {
   const m = S.repMonth || thisMonth();
@@ -1486,8 +1494,12 @@ document.addEventListener('submit', async e => {
   } else if (f.id === 'ledForm') {
     await saveLedger(f);
   } else if (f.id === 'payForm') {
-    const d = readPayForm(), sh = S.sheet, isNew = !sh.id, amt = numOrNull(d.amount), st = S.stores.find(s => s.id === d.store_id);
+    const d = readPayForm(), sh = S.sheet, isNew = !sh.id, st = S.stores.find(s => s.id === d.store_id);
+    const useBatches = d.method === 'Card batches';
+    if (useBatches) d.amount = d.batches.length ? String(batchSum(d)) : '';
+    const amt = numOrNull(d.amount);
     if (!st) { toast('Pick a store first.'); return; }
+    if (useBatches && !d.batches.length) { toast('Tick at least one card batch.'); return; }
     if (!amt || amt <= 0) { toast('Type the amount received.'); return; }
     const allocs = []; let bad = '';
     payRows(sh).forEach(i => { const v = numOrNull(d.alloc[i.id]); if (v == null || v === 0) return; if (v < 0) bad = 'Amounts cannot be negative.'; else if (v > invBalance(i, sh.id) + 0.004) bad = 'More than ' + i.number + ' still owes.'; allocs.push({ invoice_id: i.id, amount: r2(v) }); });
@@ -1501,6 +1513,11 @@ document.addEventListener('submit', async e => {
       if (isNew) await db.insert('payments', { id, ...row, notified: false, created_by: S.me, created_at: stamp });
       else { await db.update('payments', id, row); for (const a of S.allocs.filter(x => x.payment_id === id)) await db.remove('payment_allocations', a.id); }
       for (const a of allocs) await db.insert('payment_allocations', { id: uid(), payment_id: id, ...a });
+      const want = useBatches ? d.batches : [];
+      for (const c of S.cards) {
+        if (c.payment_id === id && !want.includes(c.id)) await db.update('card_settlements', c.id, { payment_id: null });
+        else if (want.includes(c.id) && c.payment_id !== id) await db.update('card_settlements', c.id, { payment_id: id });
+      }
       return true;
     }, 'The payment was NOT fully saved. Check your internet, then open it and check.');
     if (!okay) { if (sub) { sub.disabled = false; sub.textContent = '✅ Confirm and save'; } return; }
@@ -1575,8 +1592,15 @@ document.addEventListener('change', async e => {
     S.repMonth = el.value || thisMonth(); renderMain();
   } else if (el.id === 'ledFile') {
     const file = el.files[0]; if (!file) return; const d = readLedForm(); d.file = file; d.fileName = file.name; renderSheet();
-  } else if (el.id === 'payStore') {
-    const d = readPayForm(); d.alloc = {}; renderSheet();
+  } else if (el.id === 'payStore' || el.id === 'payMethod') {
+    const d = readPayForm(); d.alloc = {}; d.batches = [];
+    if (d.method === 'Card batches') d.amount = '';
+    renderSheet();
+  } else if (el.dataset.batch !== undefined) {
+    const d = readPayForm(), id = el.dataset.batch;
+    d.batches = d.batches.filter(x => x !== id); if (el.checked) d.batches.push(id);
+    d.amount = d.batches.length ? String(batchSum(d)) : ''; d.alloc = {};
+    renderSheet();
   } else if (el.id === 'payAmount') {
     readPayForm(); renderSheet();
   } else if (el.dataset.pick !== undefined) {
