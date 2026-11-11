@@ -175,7 +175,7 @@ const orderFacts = o => ['Delivery date: ' + niceDate(o.day)].concat(GRADES.filt
 const TERMS = ['Net 7', 'Net 15', 'Net 30', 'Weekly settlement', 'Due on delivery'];
 const PRICE_METHODS = ['Rack price + cents/gallon', 'Fixed selling price', 'Delivered cost + markup', 'Custom / quoted price'];
 const FREIGHT_METHODS = ['Included in fuel price', 'Pass-through actual freight', 'Fixed cents/gallon', 'Custom'];
-const PRICE_FIELDS = [['parent', 'Parent company'], ['brand', 'Brand / card network'], ['terms', 'Payment terms'], ['credit_limit', 'Credit limit ($)'], ['pricing_method', 'Pricing agreement'], ['benchmark', 'Rack / terminal benchmark'], ['fixed_price', 'Fixed selling price ($/gal)'], ['differential', 'Differential / markup ($/gal)'], ['freight_method', 'Freight arrangement'], ['freight_rate', 'Freight rate ($/gal)']];
+const PRICE_FIELDS = [['parent', 'Parent company'], ['brand', 'Brand / card network'], ['station_no', 'Station # (from the brand)'], ['terms', 'Payment terms'], ['credit_limit', 'Credit limit ($)'], ['pricing_method', 'Pricing agreement'], ['benchmark', 'Rack / terminal benchmark'], ['fixed_price', 'Fixed selling price ($/gal)'], ['differential', 'Differential / markup ($/gal)'], ['freight_method', 'Freight arrangement'], ['freight_rate', 'Freight rate ($/gal)']];
 const PRICE_NUMS = ['credit_limit', 'fixed_price', 'differential', 'freight_rate'];
 const numText = v => { const s = String(v == null ? '' : v).replace(/[$,\s]/g, ''); return s === '' || isNaN(Number(s)) ? '' : String(Number(s)); };
 const pricingDraft = r => { const p = {}; PRICE_FIELDS.forEach(([k]) => { p[k] = r && r[k] != null ? String(r[k]) : ''; }); p.termsCustom = !!p.terms && !TERMS.includes(p.terms); return p; };
@@ -198,6 +198,7 @@ function pricingBlock(p) {
   return `<div class="group money"><div class="group-t">💲 Pricing deal <small>partners only</small></div>
     ${txt('parent', 'Parent company')}
     ${txt('brand', 'Brand / card network')}
+    ${txt('station_no', 'Station # (the number Marathon, Shell… gave this station)', 'e.g. 3022')}
     <label class="f">Payment terms</label><select class="in" data-pp="terms"><option value="">Pick one…</option>${opt(TERMS, p.termsCustom ? null : p.terms)}<option value="__custom"${p.termsCustom ? ' selected' : ''}>✏️ Custom (type your own)</option></select>
     ${p.termsCustom ? `<input class="in" data-p="terms" placeholder="Type the terms" value="${esc(p.terms)}" style="margin-top:6px">` : ''}
     ${num('credit_limit', 'Credit limit ($)', 'like 25000')}
@@ -890,7 +891,107 @@ function ledLine(k, r) {
   if (k === 'cards') { const p = r.payment_id && S.payments.find(x => x.id === r.payment_id); return { title: r.store_name || 'Card batch', amt: r.gross, pill: p ? '<span class="pill s-done">Used</span>' : '<span class="pill">Held</span>', meta: [r.reference ? 'Batch #' + r.reference : '', p ? 'Put toward invoices on ' + niceDate(p.day) : 'Waiting to go toward an invoice'] }; }
   return { title: (r.category || 'Expense') + (r.vendor ? ' · ' + r.vendor : ''), amt: r.amount, pill: '', meta: [r.method || ''] };
 }
+/* ---- card batches: grouped by store, bulk entry, statement ---- */
+const stationOf = id => { const p = S.store_pricing.find(x => x.id === id); return p && p.station_no ? String(p.station_no) : ''; };
+function storesSorted() {
+  const list = S.stores.map(s => ({ id: s.id, name: s.name, no: stationOf(s.id), address: s.address }));
+  return S.cardSort === 'num' ? list.sort((a, b) => (!a.no) - (!b.no) || (a.no || '').localeCompare(b.no || '', undefined, { numeric: true }) || a.name.localeCompare(b.name)) : list.sort((a, b) => a.name.localeCompare(b.name));
+}
+const sortBtns = () => `<p class="row"><span class="muted">Sort by</span><button type="button" class="btn${S.cardSort !== 'num' ? ' on' : ''}" data-act="card-sort" data-v="name">Station name</button><button type="button" class="btn${S.cardSort === 'num' ? ' on' : ''}" data-act="card-sort" data-v="num">Station #</button></p>`;
+const heldOf = id => r2(S.cards.filter(c => c.store_id === id && !c.payment_id).reduce((s, c) => s + Number(c.gross || 0), 0));
+function storeBal(id, before) {
+  const lt = d => !before || (d || '') < before;
+  const inv = S.invoices.filter(i => i.status === 'ready' && i.store_id === id && lt(i.day)).reduce((s, i) => s + Number(i.total || 0), 0);
+  const cb = S.cards.filter(c => c.store_id === id && lt(c.day)).reduce((s, c) => s + Number(c.gross || 0), 0);
+  const pay = S.payments.filter(p => p.store_id === id && p.method !== 'Card batches' && lt(p.day)).reduce((s, p) => s + Number(p.amount || 0), 0);
+  return r2(inv - cb - pay);
+}
+function cardsView() {
+  if (S.cardStore) return cardStoreView(S.cardStore);
+  const rows = storesSorted();
+  const total = r2(rows.reduce((s, r) => s + heldOf(r.id), 0));
+  return `<div class="group money"><div class="total-line" style="margin:0;border:0;padding:0">Card money we hold now: <b>${money(total)}</b></div></div>
+    <p><button class="btn go" data-act="bulk-new">📥 + Add a day’s batches (all stations)</button></p>
+    ${sortBtns()}
+    ${rows.map(r => { const last = S.cards.filter(c => c.store_id === r.id).sort((a, b) => (b.day || '').localeCompare(a.day || ''))[0], bal = storeBal(r.id);
+      return `<div class="card order-card" data-act="card-store" data-id="${r.id}">
+      <div class="card-title">${r.no ? '#' + esc(r.no) + ' · ' : ''}${esc(r.name)} <span style="float:right">${money(heldOf(r.id))}</span></div>
+      <div class="card-meta"><span>💳 held</span><span>${last ? 'Last batch ' + esc(niceDate(last.day)) : 'No batches yet'}</span><span>Balance ${bal < 0 ? '<b>' + money(-bal) + ' we hold</b>' : money(bal) + ' they owe'}</span></div></div>`; }).join('') || '<p class="empty">No stores yet.</p>'}
+    <p class="muted">Add each station’s number on its store page (Pricing deal → Station #) to sort by it.</p>`;
+}
+function cardStoreView(id) {
+  const st = S.stores.find(s => s.id === id); if (!st) { S.cardStore = null; return cardsView(); }
+  const list = S.cards.filter(c => c.store_id === id).sort((a, b) => (b.day || '').localeCompare(a.day || ''));
+  const to = S.stTo || today(), from = S.stFrom || addDays(to, -6), no = stationOf(id), bal = storeBal(id);
+  return `<p><button class="btn" data-act="card-back">← All stations</button></p>
+    <h2 class="sec">${no ? '#' + esc(no) + ' · ' : ''}${esc(st.name)}</h2>
+    <div class="group money"><div class="total-line" style="margin:0;border:0;padding:0">Held now: <b>${money(heldOf(id))}</b> · Balance: <b>${bal < 0 ? money(-bal) + ' we hold for them' : money(bal) + ' they owe us'}</b></div></div>
+    <div class="group"><div class="group-t">📄 Statement for the store owner</div>
+      <label class="f">From</label><input class="in" type="date" id="stFrom" value="${esc(from)}">
+      <label class="f">To</label><input class="in" type="date" id="stTo" value="${esc(to)}">
+      <p></p><button class="btn go" data-act="statement">📄 Make statement (PDF)</button></div>
+    <h3 class="sec">Batches (${list.length})</h3>
+    ${list.map(r => { const x = ledLine('cards', r); return `<div class="card order-card" data-act="open-led" data-id="${r.id}">
+      <div class="card-top"><span class="pill">📅 ${esc(niceDate(r.day))}</span>${x.pill}</div>
+      <div class="card-title">${r.reference ? 'Batch #' + esc(r.reference) : 'Card batch'} <span style="float:right">${money(r.gross)}</span></div>
+      <div class="card-meta"><span>${esc(x.meta[1])}</span></div></div>`; }).join('') || '<p class="empty">No batches yet for this station.</p>'}`;
+}
+function statementHtml(id, from, to) {
+  const st = S.stores.find(s => s.id === id) || {}, o = S.office || {}, nl = s => esc(s || '').replace(/\n/g, '<br>');
+  const inR = d => (d || '') >= from && (d || '') <= to;
+  const prev = storeBal(id, from);
+  const invs = S.invoices.filter(i => i.status === 'ready' && i.store_id === id && inR(i.day)).sort((a, b) => (a.day || '').localeCompare(b.day || ''));
+  const rec = S.cards.filter(c => c.store_id === id && inR(c.day)).map(c => ({ day: c.day, ref: c.reference || '', what: 'Card batch' + (c.payment_id ? ' (applied)' : ' (held)'), amt: Number(c.gross || 0) }))
+    .concat(S.payments.filter(p => p.store_id === id && p.method !== 'Card batches' && inR(p.day)).map(p => ({ day: p.day, ref: p.reference || '', what: 'Payment – ' + (p.method || ''), amt: Number(p.amount || 0) })))
+    .sort((a, b) => a.day.localeCompare(b.day));
+  const pays = r2(rec.reduce((s, r) => s + r.amt, 0)), buys = r2(invs.reduce((s, i) => s + Number(i.total || 0), 0)), sub = r2(prev - pays), now = r2(sub + buys);
+  const sm = n => (n < 0 ? money(-n) + '-' : money(n));
+  let run = prev;
+  return `<div class="pi">
+    <h2 style="text-align:center;margin:0 0 12px">Statement of Account Activity</h2>
+    <div class="pi-top"><div><b class="pi-co">${esc(o.name || 'King Energy')}</b><br>${nl(o.address)}${o.phone ? '<br>' + esc(o.phone) : ''}${o.email ? '<br>' + esc(o.email) : ''}</div>
+      ${o.remit_to ? `<div><b>Remit to:</b><br>${nl(o.remit_to)}</div>` : ''}</div>
+    <div class="pi-top" style="margin-top:16px"><div><b>${esc(st.name || '')}</b><br>${nl(st.address)}</div>
+      <table class="pi-meta">${stationOf(id) ? `<tr><td>Account:</td><td>${esc(stationOf(id))}</td></tr>` : ''}<tr><td>Period:</td><td>${esc(longDate(from))} – ${esc(longDate(to))}</td></tr><tr><td>Statement Date:</td><td>${esc(longDate(today()))}</td></tr></table></div>
+    <table style="margin-top:16px"><tr><th class="n">Previous Balance</th><th class="n">− Payments</th><th class="n">= Subtotal</th><th class="n">+ Purchases</th><th class="n">= New Balance</th></tr>
+      <tr><td class="n">${sm(prev)}</td><td class="n">${money(pays)}</td><td class="n">${sm(sub)}</td><td class="n">${money(buys)}</td><td class="n"><b>${sm(now)}</b></td></tr></table>
+    <h3>Purchases (fuel invoices)</h3>
+    ${invs.length ? `<table><tr><th>Date</th><th>Invoice</th><th>BOL</th><th class="n">Amount</th></tr>${invs.map(i => `<tr><td>${esc(longDate(i.day))}</td><td>${esc(i.number)}</td><td>${esc(invBol(i))}</td><td class="n">${money(i.total)}</td></tr>`).join('')}</table>` : '<p>None in this period.</p>'}
+    <h3>Receipts (card batches and payments)</h3>
+    ${rec.length ? `<table><tr><th>Date</th><th>Reference #</th><th>Description</th><th class="n">Amount</th><th class="n">Balance</th></tr>${rec.map(r => { run = r2(run - r.amt); return `<tr><td>${esc(longDate(r.day))}</td><td>${esc(r.ref)}</td><td>${esc(r.what)}</td><td class="n">${money(r.amt)}-</td><td class="n">${sm(run)}</td></tr>`; }).join('')}
+      <tr><td colspan="3"><b>Total Receipts</b></td><td class="n"><b>${money(pays)}-</b></td><td></td></tr></table>` : '<p>None in this period.</p>'}
+    <div class="pi-total">Statement Total <b>${sm(now)}</b></div>
+    <p class="muted">A minus (-) balance means ${esc(o.name || 'King Energy')} is holding that money for you; it goes toward your next fuel invoice.</p>
+    <p class="pi-foot">${esc(o.footer || 'Thank you for your business!')}</p></div>`;
+}
+function bulkSheet(sh) {
+  const d = sh.draft, rows = storesSorted();
+  if (sh.confirming) {
+    const picked = rows.filter(r => numOrNull(d.amt[r.id]) > 0), tot = r2(picked.reduce((s, r) => s + numOrNull(d.amt[r.id]), 0));
+    return `<div class="sheet-head"><button data-act="bulk-back">← Change</button><span>Check before saving</span><span></span></div>
+    <form class="sheet-body" id="bulkForm"><div class="group money"><div class="group-t">💳 Card batches for ${esc(niceDate(d.day))}</div>
+      <table class="inv-t">${picked.map(r => `<tr><td>${r.no ? '#' + esc(r.no) + ' · ' : ''}${esc(r.name)}${d.ref[r.id] ? '<br><small>Batch #' + esc(d.ref[r.id]) + '</small>' : ''}</td><td class="num"><b>${money(numOrNull(d.amt[r.id]))}</b></td></tr>`).join('')}
+      <tr class="inv-total"><td>${picked.length} station${picked.length === 1 ? '' : 's'}</td><td class="num">${money(tot)}</td></tr></table></div>
+      <button class="btn go wide" type="submit">✅ Confirm and save</button><p></p><button type="button" class="btn wide" data-act="bulk-back">← Go back and change</button></form>`;
+  }
+  return `<div class="sheet-head"><button data-act="close">✕ Cancel</button><span>A day’s card batches</span><span></span></div>
+  <form class="sheet-body" id="bulkForm">
+    <label class="f">Batch date (business day)</label><input class="in" type="date" name="day" value="${esc(d.day)}">
+    ${sortBtns()}
+    <p class="muted">Type each station’s amount from the brand’s PDF report. Leave empty if none.</p>
+    <div class="inv-wrap"><table class="inv-t"><tr><th>Station</th><th class="num">Amount ($)</th><th>Batch #</th></tr>
+      ${rows.map(r => `<tr><td>${r.no ? '<b>#' + esc(r.no) + '</b> ' : ''}${esc(r.name)}</td><td><input class="in num" data-bamt="${r.id}" inputmode="decimal" placeholder="0.00" value="${esc(d.amt[r.id] || '')}"></td><td><input class="in" data-bref="${r.id}" value="${esc(d.ref[r.id] || '')}" style="min-width:80px"></td></tr>`).join('')}</table></div>
+    <p></p><button class="btn go wide" type="submit">Next: check it →</button></form>`;
+}
+function readBulkForm() {
+  const f = $('#bulkForm'), d = S.sheet && S.sheet.draft; if (!f || !d) return d;
+  if (f.elements.day) d.day = f.elements.day.value;
+  f.querySelectorAll('[data-bamt]').forEach(el => { d.amt[el.dataset.bamt] = el.value.trim(); });
+  f.querySelectorAll('[data-bref]').forEach(el => { d.ref[el.dataset.bref] = el.value.trim(); });
+  return d;
+}
 function ledgerView(k) {
+  if (k === 'cards') return cardsView();
   const L = LEDGERS[k], m = S.ledMonth || thisMonth(), all = L.list(), rows = all.filter(r => inMonth(r.day, m)).sort((a, b) => (b.day || '').localeCompare(a.day || ''));
   const sum = f => r2(rows.reduce((s, r) => s + Number(r[f] || 0), 0));
   let top = '';
@@ -1076,6 +1177,7 @@ function renderSheet() {
   else if (sh.type === 'inv') el.innerHTML = invSheet(sh);
   else if (sh.type === 'pay') el.innerHTML = paySheet(sh);
   else if (sh.type === 'led') el.innerHTML = ledgerSheet(sh);
+  else if (sh.type === 'bulk') el.innerHTML = bulkSheet(sh);
   else if (sh.type === 'settings') el.innerHTML = settingsSheet();
   else if (sh.type === 'activity') el.innerHTML = activitySheet();
 }
@@ -1272,7 +1374,18 @@ const ACT = {
   'tax-del': async el => { const t = S.taxes.find(x => x.id === el.dataset.id); if (!t || !confirm('Remove “' + t.name + '”? Drafts stop adding it. Ready invoices keep it.')) return; await safe(() => db.remove('tax_rates', t.id), 'Could not remove the tax.'); refresh(); },
   'new-pay': () => openSheet({ type: 'pay', id: null, draft: payDraft(null) }),
   'open-pay': el => { const p = S.payments.find(x => x.id === el.dataset.id); if (p) openSheet({ type: 'pay', id: p.id, draft: payDraft(p) }); },
-  'new-led': () => openSheet({ type: 'led', k: S.tab, id: null, draft: ledDraft(S.tab, null) }),
+  'new-led': () => { const d = ledDraft(S.tab, null); if (S.tab === 'cards' && S.cardStore) d.store_id = S.cardStore; openSheet({ type: 'led', k: S.tab, id: null, draft: d }); },
+  'card-sort': el => { S.cardSort = el.dataset.v; if (S.sheet && S.sheet.type === 'bulk') { readBulkForm(); renderSheet(); } else renderMain(); },
+  'card-store': el => { S.cardStore = el.dataset.id; renderMain(); window.scrollTo(0, 0); },
+  'card-back': () => { S.cardStore = null; renderMain(); },
+  'bulk-new': () => openSheet({ type: 'bulk', draft: { day: addDays(today(), -1), amt: {}, ref: {} } }),
+  'bulk-back': () => { S.sheet.confirming = false; renderSheet(); },
+  'statement': () => {
+    const id = S.cardStore, from = ($('#stFrom') || {}).value || addDays(today(), -6), to = ($('#stTo') || {}).value || today();
+    if (from > to) { toast('“From” must be before “To”.'); return; }
+    const st = S.stores.find(s => s.id === id) || {};
+    offerFile('Statement – ' + (st.name || ''), statementHtml(id, from, to), v => makePdf($('.pi', v), 'Statement ' + (st.name || '').replace(/[^\w\- ]+/g, '') + ' ' + to + '.pdf'));
+  },
   'open-led': el => { const r = LEDGERS[S.tab].list().find(x => x.id === el.dataset.id); if (r) openSheet({ type: 'led', k: S.tab, id: r.id, draft: ledDraft(S.tab, r) }); },
   'led-file': () => { const r = LEDGERS[S.sheet.k].list().find(x => x.id === S.sheet.id); if (r && r.photo_path) openViewer({ id: r.id, name: r.photo_name || 'copy', path: r.photo_path, data: r.photo_data }); },
   'led-del': async () => {
@@ -1491,6 +1604,17 @@ document.addEventListener('submit', async e => {
       await safe(() => db.update('fuel_orders', old.id, base), 'The changes were NOT saved.');
       toast('Order changed.'); refresh();
     }
+  } else if (f.id === 'bulkForm') {
+    const sh = S.sheet, d = readBulkForm();
+    if (!d.day) { toast('Pick the batch date.'); return; }
+    const rows = S.stores.filter(s => d.amt[s.id] !== undefined && d.amt[s.id] !== '');
+    const bad = rows.find(s => !(numOrNull(d.amt[s.id]) > 0)); if (bad) { toast('Check the amount for ' + bad.name + '.'); return; }
+    if (!rows.length) { toast('Type at least one amount.'); return; }
+    if (!sh.confirming) { sh.confirming = true; renderSheet(); $('#sheet').scrollTop = 0; return; }
+    const sub = f.querySelector('button[type=submit]'); if (sub) { sub.disabled = true; sub.textContent = 'Saving…'; }
+    const stamp = nowIso(); let n = 0;
+    const okay = await safe(async () => { for (const s of rows) { const a = r2(numOrNull(d.amt[s.id])); await db.insert('card_settlements', { id: uid(), day: d.day, store_id: s.id, store_name: s.name, gross: a, fees: 0, net: a, reference: d.ref[s.id] || null, created_by: S.me, created_at: stamp, updated_by: S.me, updated_at: stamp }); n++; } return true; }, 'Not all batches were saved. Check the list before trying again.');
+    closeSheet(); if (okay) toast(n + ' card batch' + (n === 1 ? '' : 'es') + ' saved.'); refresh();
   } else if (f.id === 'ledForm') {
     await saveLedger(f);
   } else if (f.id === 'payForm') {
@@ -1586,6 +1710,8 @@ document.addEventListener('change', async e => {
     }
     if (S.sheet && S.sheet.id === taskId) renderSheet();
     renderMain();
+  } else if (el.id === 'stFrom' || el.id === 'stTo') {
+    S[el.id] = el.value;
   } else if (el.id === 'ledMonth') {
     S.ledMonth = el.value || thisMonth(); renderMain();
   } else if (el.id === 'repMonth') {
