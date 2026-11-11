@@ -248,3 +248,9 @@ label.chk { display: inline-flex; align-items: center; gap: 4px; margin: 6px 12p
 .pi-total b { margin-left: 24px; }
 .pi-foot { text-align: center; margin-top: 30px; }
 .btn.wa { background: #25d366; color: #fff; border-color: #1ebe5b; text-decoration: none; display: inline-block; font-weight: 700; }
+
+/* bigger, labeled menu button (user asked) */
+.top .menu-btn { display: inline-flex; flex-direction: column; align-items: center; justify-content: center; min-width: 54px; height: 50px; padding: 2px 8px; border: 2px solid rgba(255,255,255,.75); border-radius: 10px; background: rgba(255,255,255,.12); color: #fff; line-height: 1; }
+.top .menu-btn .mb-i { font-size: 26px; }
+.top .menu-btn .mb-t { font-size: 11px; font-weight: 700; margin-top: 2px; }
+@media (min-width: 900px) { .top .menu-btn { display: none; } }

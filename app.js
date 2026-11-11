@@ -1151,7 +1151,7 @@ function renderMain() {
       ${menu.map(m => `<button class="${S.tab === m[0] ? 'on' : ''}" data-act="tab" data-v="${m[0]}"><span>${m[1]}</span>${m[2]}</button>`).join('')}
       <div class="side-who">${esc(nameOf(S.me))}<br><small>${partner ? 'Partner' : 'Staff'}</small></div></nav>
     ${S.menuOpen ? '<div class="shade" data-act="menu-close"></div>' : ''}
-    <header class="top"><button data-act="menu" class="menu-btn" aria-label="Menu">☰</button><h1>${cur[1]} ${esc(cur[2])}<small>${esc(sub)}</small></h1><button data-act="refresh" aria-label="Refresh">↻</button>${partner ? `<button data-act="bell" class="bell" aria-label="Recent changes">🔔${unseenCount() ? `<b class="badge">${unseenCount()}</b>` : ''}</button>` : ''}<button data-act="settings">${esc(nameOf(S.me))} ⚙</button></header>
+    <header class="top"><button data-act="menu" class="menu-btn" aria-label="Menu"><span class="mb-i">☰</span><span class="mb-t">Menu</span></button><h1>${cur[1]} ${esc(cur[2])}<small>${esc(sub)}</small></h1><button data-act="refresh" aria-label="Refresh">↻</button>${partner ? `<button data-act="bell" class="bell" aria-label="Recent changes">🔔${unseenCount() ? `<b class="badge">${unseenCount()}</b>` : ''}</button>` : ''}<button data-act="settings">${esc(nameOf(S.me))} ⚙</button></header>
     <main>
       ${DEMO ? '<div class="banner">Practice mode: saved on this device only. Your partners cannot see it yet.</div>' : ''}
       ${partner && PUSH_OK && !alertsOn ? '<div class="banner">🔔 Alerts are off on this phone. <button class="btn" data-act="alert-on">Turn on</button></div>' : ''}
