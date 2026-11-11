@@ -208,3 +208,39 @@ select.in { width: 100%; border: 1px solid var(--line); background: var(--card);
 .order-card.os-delivered { border-left-color: var(--muted); }
 .order-card.os-cancelled { border-left-color: var(--muted); opacity: .6; }
 .order-card .card-top { display: flex; gap: 6px; }
+
+/* ---- invoices ---- */
+.inv-wrap { overflow-x: auto; margin: 8px 0; }
+.inv-t { width: 100%; border-collapse: collapse; font-size: 14px; }
+.inv-t th, .inv-t td { padding: 6px 4px; border-bottom: 1px solid var(--line, #ddd); text-align: left; vertical-align: middle; }
+.inv-t .num { text-align: right; white-space: nowrap; }
+.inv-t input.in { margin: 0; padding: 6px; min-width: 90px; }
+.inv-t input.num { text-align: right; }
+.inv-t .need { border: 2px solid var(--red, #c62828); background: var(--red-bg, #fdecea); }
+.inv-t .inv-h td { font-weight: 700; padding-top: 14px; color: var(--brand); }
+.inv-t .inv-total td { font-weight: 800; font-size: 16px; border-top: 2px solid currentColor; }
+.inv-t button.x { background: none; border: 0; font-size: 16px; cursor: pointer; color: inherit; }
+.need-pill { background: var(--red-bg, #fdecea); color: var(--red, #c62828); }
+.need-banner { background: var(--red-bg, #fdecea); border-color: var(--red, #c62828); }
+label.chk { display: inline-flex; align-items: center; gap: 4px; margin: 6px 12px 6px 0; }
+#printArea { display: none; }
+@media print {
+  body.printing > *:not(#printArea) { display: none !important; }
+  body.printing #printArea { display: block; }
+  body.printing { background: #fff; margin: 0; }
+}
+.pi { font-family: Arial, sans-serif; color: #000; font-size: 11pt; padding: 0.4in; }
+.pi-top { display: flex; justify-content: space-between; gap: 20px; }
+.pi-co { font-size: 16pt; }
+.pi-meta td { padding: 1px 6px; }
+.pi-remit { margin: 16px 0 0 40%; }
+.pi-to { display: flex; justify-content: space-between; margin: 18px 0; gap: 20px; }
+.pi-to > div { flex: 1; }
+.pi h3 { font-size: 11pt; margin: 16px 0 4px; border-bottom: 1px solid #000; }
+.pi table { width: 100%; border-collapse: collapse; }
+.pi th { text-align: left; font-size: 9pt; border-bottom: 1px solid #999; }
+.pi th, .pi td { padding: 3px 4px; }
+.pi .n { text-align: right; }
+.pi-total { text-align: right; font-size: 14pt; margin: 18px 0 8px; border-top: 2px solid #000; padding-top: 6px; }
+.pi-total b { margin-left: 24px; }
+.pi-foot { text-align: center; margin-top: 30px; }

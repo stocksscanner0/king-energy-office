@@ -47,6 +47,8 @@ function demoDb() {
   try { d = JSON.parse(localStorage.getItem(KEY)); } catch (e) { /* storage blocked */ }
   if (!d) d = seed();
   d.store_files = d.store_files || []; d.activity = d.activity || []; d.store_pricing = d.store_pricing || []; d.staff = d.staff || []; d.fuel_orders = d.fuel_orders || []; d.deliveries = d.deliveries || [];
+  d.invoices = d.invoices || []; d.office_info = d.office_info || []; d.rack_prices = d.rack_prices || [];
+  if (!d.tax_rates) d.tax_rates = DEFAULT_TAXES.map((t, i) => ({ id: uid(), name: t[0], rate: t[1], grades: ['regular', 'premium'], sort: i + 1, active: true }));
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(d)); } catch (e) { /* ignore */ } };
   return {
     async init() {},
@@ -62,8 +64,13 @@ function demoDb() {
     async insert(t, row) {
       d[t].push({ ...row });
       if (t === 'deliveries' && row.order_id) { const o = d.fuel_orders.find(x => x.id === row.order_id); if (o) o.status = 'delivered'; }
+      if (t === 'deliveries') {
+        const n = d.invoices.filter(i => i.number.startsWith('KE-' + today().replace(/-/g, ''))).length + 1;
+        d.invoices.push({ id: uid(), number: 'KE-' + today().replace(/-/g, '') + '-' + String(n).padStart(3, '0'), delivery_id: row.id, store_id: row.store_id, store_name: row.store_name, day: row.day, status: 'draft', lines: [], needs_price: true, created_at: nowIso() });
+      }
       save();
     },
+    async upsert(t, row) { const r = d[t].find(x => x.id === row.id); if (r) Object.assign(r, row); else d[t].push({ ...row }); save(); },
     async uploadBlob(row, file) {
       if (file.size > 400000) throw new Error('Practice mode can only keep small photos (under 400 KB). Real mode has no such limit.');
       row.photo_data = await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = rej; fr.readAsDataURL(file); });
@@ -72,6 +79,7 @@ function demoDb() {
     async remove(t, id) {
       const gone = d[t].find(x => x.id === id);
       d[t] = d[t].filter(x => x.id !== id);
+      if (t === 'deliveries') d.invoices = d.invoices.filter(i => i.delivery_id !== id);
       if (t === 'deliveries' && gone && gone.order_id) { const o = d.fuel_orders.find(x => x.id === gone.order_id); if (o && o.status === 'delivered') o.status = 'new'; }
       if (t === 'tasks') { d.events = d.events.filter(e => e.task_id !== id); d.files = d.files.filter(f => f.task_id !== id); }
       if (t === 'stores') { d.store_files = d.store_files.filter(f => f.store_id !== id); d.store_pricing = d.store_pricing.filter(p => p.id !== id); }
@@ -85,7 +93,7 @@ function demoDb() {
     async fileUrl(row) { const f = row.data ? row : d.files.concat(d.store_files).find(x => x.id === row.id); const blob = await (await fetch(f.data)).blob(); return URL.createObjectURL(blob); },
     async removeFile(row, table = 'files') { await this.remove(table, row.id); },
     async fn() { return {}; },
-    reset() { try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ } d = seed(); d.store_files = []; d.activity = []; d.store_pricing = []; d.staff = []; d.fuel_orders = []; d.deliveries = []; }
+    reset() { try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ } d = seed(); d.store_files = []; d.activity = []; d.store_pricing = []; d.staff = []; d.fuel_orders = []; d.deliveries = []; d.invoices = []; d.office_info = []; d.rack_prices = []; d.tax_rates = undefined; }
   };
 }
 
@@ -108,7 +116,7 @@ function supaDb() {
     async signOut() { await sb.auth.signOut(); },
     async setPassword(pw) { ok(await sb.auth.updateUser({ password: pw })); },
     async loadAll() {
-      const names = ['members', 'tasks', 'events', 'files', 'stores', 'store_files', 'activity', 'store_pricing', 'staff', 'fuel_orders', 'deliveries'];
+      const names = ['members', 'tasks', 'events', 'files', 'stores', 'store_files', 'activity', 'store_pricing', 'staff', 'fuel_orders', 'deliveries', 'invoices', 'office_info', 'tax_rates', 'rack_prices'];
       const [sl, tn] = await Promise.all([sb.rpc('store_list'), sb.rpc('team_names')]);
       const rs = await Promise.all(names.map(n => n === 'activity' ? sb.from(n).select('*').order('created_at', { ascending: false }).limit(100) : sb.from(n).select('*')));
       const out = {}; rs.forEach((r, i) => { out[names[i]] = ok(r); });
@@ -118,6 +126,7 @@ function supaDb() {
     async update(t, id, patch) { ok(await sb.from(t).update(patch).eq('id', id)); },
     async remove(t, id) { ok(await sb.from(t).delete().eq('id', id)); },
     async uploadFile(row, file, table = 'files') { ok(await sb.storage.from('files').upload(row.path, file)); await this.insert(table, row); },
+    async upsert(t, row) { ok(await sb.from(t).upsert(row)); },
     async uploadBlob(row, file) { ok(await sb.storage.from('files').upload(row.photo_path, file)); },
     async fileUrl(row) { return ok(await sb.storage.from('files').createSignedUrl(row.path, 3600)).signedUrl; },
     async removeFile(row, table = 'files') { await sb.storage.from('files').remove([row.path]); await this.remove(table, row.id); },
@@ -137,6 +146,7 @@ function supaDb() {
   };
 }
 
+const DEFAULT_TAXES = [['Federal Excise Gasoline', 0.183], ['Federal L.U.S.T.', 0.001], ['Federal Superfund Gas', 0.00386], ['KY Environmental Assessment', 0.014], ['KY Excise Gas', 0.25], ['TN Export Fee', 0.0005]];
 const db = DEMO ? demoDb() : supaDb();
 
 /* ---------- state ---------- */
@@ -200,7 +210,7 @@ const ACT_ICON = { delivery: '🚚', order: '⛽', store: '🏪', task_new: '�
 const isImage = n => /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(n || '');
 const HUES = [210, 150, 28, 280, 345, 175, 50, 240];
 const thumbUrls = new Map();
-const S = { orders: [], deliveries: [], storeList: [], team: [], staff: [], role: null, menuOpen: false, store_pricing: [], store_files: [], activity: [], me: null, members: [], tasks: [], events: [], files: [], stores: [], tab: 'tasks', filter: 'all', sheet: null, search: '', draftComment: '' };
+const S = { orders: [], deliveries: [], invoices: [], office: null, taxes: [], racks: [], storeList: [], team: [], staff: [], role: null, menuOpen: false, store_pricing: [], store_files: [], activity: [], me: null, members: [], tasks: [], events: [], files: [], stores: [], tab: 'tasks', filter: 'all', sheet: null, search: '', draftComment: '' };
 const nameOf = email => { const m = S.members.find(x => x.email === email) || S.staff.find(x => x.email === email) || S.team.find(x => x.email === email); return m ? m.name : (email || ''); };
 // Who is this? A partner sees everything. Staff see only orders and BOLs. Anyone else is not let in.
 const roleOf = email => S.members.some(m => m.email === email) ? 'partner' : S.staff.some(s => s.email === email && s.active) ? 'staff' : null;
@@ -227,7 +237,9 @@ async function refresh() {
     const d = await db.loadAll();
     S.members = d.members.sort((a, b) => a.name.localeCompare(b.name));
     S.tasks = d.tasks; S.events = d.events; S.files = d.files; S.stores = d.stores; S.store_files = d.store_files || []; S.store_pricing = d.store_pricing || []; S.staff = d.staff || [];
-    S.orders = d.fuel_orders || []; S.deliveries = d.deliveries || []; S.storeList = d.store_list || []; S.team = d.team_names || [];
+    S.orders = d.fuel_orders || []; S.deliveries = d.deliveries || [];
+    S.invoices = d.invoices || []; S.office = (d.office_info || []).find(x => x.id === 'main') || null;
+    S.taxes = (d.tax_rates || []).slice().sort((a, b) => (a.sort || 0) - (b.sort || 0)); S.racks = d.rack_prices || []; S.storeList = d.store_list || []; S.team = d.team_names || [];
     if (S.role && !roleOf(S.me)) { await db.signOut(); S.me = null; S.role = null; closeSheet(); renderLogin('You have been signed out.'); return; }
     S.activity = (d.activity || []).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
   } catch (e) { console.error(e); toast('Could not load. Check your internet.'); return; }
@@ -455,7 +467,7 @@ function storeCards() {
 }
 
 /* The menu. 'partner' pages are hidden from staff here AND locked in storage. */
-const MENU = [['tasks', '✅', 'Tasks', 'partner'], ['stores', '🏪', 'Stores', 'partner'], ['orders', '⛽', 'Fuel orders', 'all'], ['bols', '🚚', 'Deliveries / BOL', 'all'], ['staff', '👥', 'Staff', 'partner']];
+const MENU = [['tasks', '✅', 'Tasks', 'partner'], ['stores', '🏪', 'Stores', 'partner'], ['orders', '⛽', 'Fuel orders', 'all'], ['bols', '🚚', 'Deliveries / BOL', 'all'], ['invoices', '🧾', 'Invoices', 'partner'], ['company', '🏢', 'Company & taxes', 'partner'], ['staff', '👥', 'Staff', 'partner']];
 const menuFor = () => MENU.filter(m => m[3] === 'all' || S.role === 'partner');
 
 function staffView() {
@@ -562,6 +574,166 @@ function dlvSheet(sh) {
     ${x && partner ? `<p style="margin-top:32px"><button type="button" class="btn danger" data-act="dlv-del">Delete this delivery</button></p>` : ''}` : ''}
   </form>`;
 }
+/* ---- invoices (partners only) ---- */
+const r2 = n => Math.round(Number(n) * 100) / 100;
+const money = n => (n == null || n === '' || isNaN(n)) ? '—' : (Number(n) < 0 ? '-$' : '$') + Math.abs(Number(n)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const rate6 = n => (n == null || n === '' || isNaN(n)) ? '' : Number(n).toFixed(6);
+const numOrNull = v => { const s = String(v == null ? '' : v).replace(/[$,\s]/g, ''); return s === '' || isNaN(Number(s)) ? null : Number(s); };
+const addDays = (s, n) => { const d = parseYmd(s); d.setDate(d.getDate() + n); return ymd(d); };
+const longDate = s => s ? parseYmd(s).toLocaleDateString('en-US', { weekday: 'short', month: '2-digit', day: '2-digit', year: 'numeric' }) : '';
+const rackFor = (day, k) => { const r = S.racks.find(x => x.id === day + '|' + k); return r ? Number(r.price) : null; };
+function dueFrom(day, terms) {
+  const m = /net\s*(\d+)/i.exec(terms || '');
+  if (m) return addDays(day, +m[1]);
+  if (/weekly/i.test(terms || '')) return addDays(day, 1);
+  return day;
+}
+const INV_TERMS = ['Due on delivery', 'Net 7', 'Net 10', 'Net 15', 'Net 30', 'Weekly settlement'];
+function autoRate(p, day, k) {
+  const m = p.pricing_method || '';
+  if (m === 'Fixed selling price') return p.fixed_price != null ? Number(p.fixed_price) : null;
+  if (m === 'Rack price + cents/gallon' || m === 'Delivered cost + markup') { const r = rackFor(day, k); return r == null ? null : r + Number(p.differential || 0); }
+  return null;
+}
+function invLines(inv, saved) {
+  const dl = S.deliveries.find(x => x.id === inv.delivery_id) || {}, p = S.store_pricing.find(x => x.id === inv.store_id) || {};
+  const old = {}; (saved || []).forEach(l => { if (l.key) old[l.key] = l; });
+  const keep = (key, auto) => old[key] && old[key].manual ? { rate: old[key].rate, manual: true } : { rate: auto, manual: false };
+  const out = [], got = GRADES.filter(([k]) => Number(dl[k]) > 0);
+  got.forEach(([k, l]) => { const key = 'fuel:' + k; out.push({ key, type: 'fuel', grade: k, label: l, gallons: Number(dl[k]), ...keep(key, autoRate(p, inv.day, k)) }); });
+  const fm = p.freight_method || '';
+  if (fm && fm !== 'Included in fuel price') got.forEach(([k, l]) => { const key = 'freight:' + k; out.push({ key, type: 'freight', grade: k, label: l, gallons: Number(dl[k]), ...keep(key, fm === 'Fixed cents/gallon' && p.freight_rate != null ? Number(p.freight_rate) : null) }); });
+  S.taxes.filter(t => t.active !== false).forEach(t => {
+    const basis = got.filter(([k]) => (t.grades || []).includes(k)).reduce((s, [k]) => s + Number(dl[k]), 0);
+    if (basis > 0) { const key = 'tax:' + t.id; out.push({ key, type: 'tax', label: t.name, gallons: basis, ...keep(key, Number(t.rate)) }); }
+  });
+  (saved || []).filter(l => l.type === 'other').forEach(l => out.push({ ...l }));
+  out.forEach(l => { l.amount = l.type === 'other' ? numOrNull(l.amount) : (l.rate == null ? null : r2(l.gallons * l.rate)); });
+  return out;
+}
+const invTotal = ls => r2(ls.reduce((s, l) => s + (l.amount || 0), 0));
+const invMissing = ls => ls.some(l => (l.type === 'fuel' || l.type === 'freight') && l.rate == null);
+const invBol = inv => { const d = S.deliveries.find(x => x.id === inv.delivery_id); return d ? d.bol_number : ''; };
+function invCard(inv) {
+  const ls = inv.status === 'draft' ? invLines(inv, inv.lines) : (inv.lines || []), miss = inv.status === 'draft' && invMissing(ls);
+  return `<div class="card order-card" data-act="open-inv" data-id="${inv.id}">
+    <div class="card-top"><span class="pill ${inv.status === 'ready' ? 's-done' : 's-working'}">${inv.status === 'ready' ? 'Ready' : 'Draft'}</span><span class="pill">📅 ${esc(niceDate(inv.day))}</span>${miss ? '<span class="pill need-pill">Needs a price</span>' : ''}</div>
+    <div class="card-title">${esc(inv.store_name || '')}</div>
+    <div class="card-meta"><span>🧾 ${esc(inv.number)}</span><span>BOL #${esc(invBol(inv))}</span><span><b>${miss ? '—' : money(invTotal(ls))}</b></span></div></div>`;
+}
+function rackBox() {
+  const day = S.rackDay || today();
+  return `<div class="group money"><div class="group-t">📈 Rack prices for the day <small>(used by “rack + cents” stores)</small></div>
+    <label class="f">Day</label><input class="in" type="date" id="rackDay" value="${esc(day)}">
+    ${GRADES.map(([k, l]) => `<label class="f">${l} rack ($/gal)</label><input class="in" data-rack="${k}" inputmode="decimal" placeholder="e.g. 2.451200" value="${esc(rate6(rackFor(day, k)))}">`).join('')}
+    <p></p><button class="btn go" data-act="rack-save">Save rack prices</button></div>`;
+}
+function invView() {
+  const list = S.invoices.slice().sort((a, b) => (b.day || '').localeCompare(a.day || '') || (b.number || '').localeCompare(a.number || ''));
+  const drafts = list.filter(i => i.status !== 'ready'), ready = list.filter(i => i.status === 'ready');
+  return `${rackBox()}
+    <h2 class="sec">Drafts (${drafts.length})</h2>${drafts.length ? drafts.map(invCard).join('') : '<p class="empty">No drafts. A draft is made each time a delivery is saved.</p>'}
+    ${ready.length ? `<details class="done"><summary>Ready (${ready.length})</summary>${ready.map(invCard).join('')}</details>` : ''}`;
+}
+function invSheet(sh) {
+  const inv = S.invoices.find(x => x.id === sh.id); if (!inv) return '';
+  const d = sh.draft, edit = inv.status !== 'ready', ls = d.lines, miss = invMissing(ls), dis = edit ? '' : ' disabled';
+  const row = (l, i) => l.type === 'other'
+    ? `<tr><td><input class="in" data-li="${i}" data-lf="label" value="${esc(l.label)}" placeholder="What is it?"${dis}></td><td></td><td></td><td><input class="in num" data-li="${i}" data-lf="amount" inputmode="decimal" placeholder="-25.00" value="${l.amount == null ? '' : l.amount}"${dis}></td>${edit ? `<td><button type="button" class="x" data-act="inv-line-del" data-i="${i}">✕</button></td>` : ''}</tr>`
+    : `<tr><td>${esc(l.label)}</td><td class="num">${galText(l.gallons)}</td><td><input class="in num${l.rate == null ? ' need' : ''}" data-li="${i}" data-lf="rate" inputmode="decimal" placeholder="price" value="${esc(rate6(l.rate))}"${dis}></td><td class="num">${money(l.amount)}</td>${edit ? '<td></td>' : ''}</tr>`;
+  const part = (type, title) => { const rows = ls.map((l, i) => [l, i]).filter(([l]) => l.type === type); return rows.length ? `<tr class="inv-h"><td colspan="5">${title}</td></tr>${rows.map(([l, i]) => row(l, i)).join('')}` : ''; };
+  return `<div class="sheet-head"><button data-act="close">← Back</button><span>${esc(inv.number)}</span><span></span></div>
+  <form class="sheet-body" id="invForm">
+    <p class="row"><span class="pill ${edit ? 's-working' : 's-done'}">${edit ? 'Draft' : 'Ready'}</span><span class="muted">${esc(inv.store_name)} · BOL #${esc(invBol(inv))} · ${esc(niceDate(inv.day))}</span></p>
+    <p><button type="button" class="btn" data-act="inv-bol">📷 See the BOL photo</button></p>
+    ${miss && edit ? '<div class="banner need-banner">A price is missing. Save the rack price for this day on the Invoices page, or type the price in the red box.</div>' : ''}
+    <div class="inv-wrap"><table class="inv-t"><tr><th>Item</th><th class="num">Gallons</th><th>Price / gal</th><th class="num">Amount</th>${edit ? '<th></th>' : ''}</tr>
+      ${part('fuel', 'Fuel')}${part('freight', 'Freight')}${part('tax', 'Taxes and fees')}${part('other', 'Other')}
+      <tr class="inv-total"><td colspan="3">Invoice total</td><td class="num">${miss ? '—' : money(invTotal(ls))}</td>${edit ? '<td></td>' : ''}</tr></table></div>
+    ${edit ? '<p><button type="button" class="btn" data-act="inv-line-add">+ Add a line (discount, fee, credit…)</button></p>' : ''}
+    <label class="f">Payment terms</label><select class="in" name="terms" id="invTerms"${dis}>${INV_TERMS.concat(d.terms && d.terms !== '__custom' && !INV_TERMS.includes(d.terms) ? [d.terms] : []).map(t => `<option${d.terms === t ? ' selected' : ''}>${esc(t)}</option>`).join('')}<option value="__custom"${d.terms === '__custom' ? ' selected' : ''}>Custom date</option></select>
+    <label class="f">Due date</label><input class="in" type="date" name="due_date" value="${esc(d.due_date)}"${dis}>
+    <label class="f">P.O. number (optional)</label><input class="in" name="po_number" value="${esc(d.po_number)}"${dis}>
+    <label class="f">Note printed on the invoice (optional)</label><textarea class="in" name="notes"${dis}>${esc(d.notes)}</textarea>
+    <p></p>
+    ${edit ? `<button class="btn go wide" type="submit">Save draft</button><p></p><button type="button" class="btn wide" data-act="inv-ready">✅ Mark ready</button>`
+      : `<button type="button" class="btn wide" data-act="inv-unready">✏️ Change it (back to draft)</button>`}
+    <p></p><button type="button" class="btn go wide" data-act="inv-print">🖨 Print / Save as PDF</button>
+  </form>`;
+}
+function readInvForm() {
+  const f = $('#invForm'), d = S.sheet && S.sheet.draft; if (!f || !d) return d;
+  f.querySelectorAll('[data-li]').forEach(el => {
+    const l = d.lines[+el.dataset.li], k = el.dataset.lf; if (!l) return;
+    if (k === 'rate') { const v = numOrNull(el.value); if (v !== l.rate && !(v != null && l.rate != null && v.toFixed(6) === Number(l.rate).toFixed(6))) { l.rate = v; l.manual = true; } }
+    else if (k === 'amount') l.amount = numOrNull(el.value);
+    else l.label = el.value;
+  });
+  ['terms', 'due_date', 'po_number', 'notes'].forEach(k => { if (f.elements[k]) d[k] = f.elements[k].value; });
+  const inv = S.invoices.find(x => x.id === S.sheet.id);
+  if (inv && inv.status !== 'ready') d.lines = invLines(inv, d.lines);
+  return d;
+}
+function invDraft(inv) {
+  const p = S.store_pricing.find(x => x.id === inv.store_id) || {};
+  const terms = inv.terms === 'Custom date' ? '__custom' : (inv.terms || p.terms || 'Due on delivery');
+  return { lines: inv.status === 'ready' ? (inv.lines || []) : invLines(inv, inv.lines), terms, due_date: inv.due_date || dueFrom(inv.day, terms), po_number: inv.po_number || '', notes: inv.notes || '' };
+}
+async function saveInv(status) {
+  const d = readInvForm(), inv = S.invoices.find(x => x.id === S.sheet.id); if (!inv) return false;
+  const total = invTotal(d.lines), miss = invMissing(d.lines);
+  if (status === 'ready' && miss) { toast('A price is missing. Fill in the red boxes first.'); renderSheet(); return false; }
+  const patch = { lines: d.lines, subtotal: miss ? null : total, total: miss ? null : total, needs_price: miss, terms: d.terms === '__custom' ? 'Custom date' : d.terms, due_date: d.due_date || null, po_number: d.po_number.trim(), notes: d.notes.trim(), status, ready_at: status === 'ready' ? nowIso() : null, updated_by: S.me, updated_at: nowIso() };
+  const okay = await safe(async () => { await db.update('invoices', inv.id, patch); return true; }, 'The invoice was NOT saved.');
+  if (okay) Object.assign(inv, patch);
+  return okay;
+}
+function printInvoice(inv, d) {
+  const o = S.office || {}, st = S.stores.find(x => x.id === inv.store_id) || {}, dl = S.deliveries.find(x => x.id === inv.delivery_id) || {};
+  const ls = d.lines, nl = s => esc(s || '').replace(/\n/g, '<br>');
+  const sect = (type, title, cols) => { const rows = ls.filter(l => l.type === type); return rows.length ? `<h3>${title}</h3><table><tr>${cols.map(c => `<th${c[1] ? ' class="n"' : ''}>${c[0]}</th>`).join('')}</tr>${rows.map(l => type === 'other'
+    ? `<tr><td>${esc(l.label)}</td><td class="n">${money(l.amount)}</td></tr>`
+    : `<tr><td>${esc(l.label)}</td>${type === 'fuel' ? `<td>${esc(dl.bol_number || '')}</td>` : ''}<td class="n">${galText(l.gallons)}</td><td class="n">${rate6(l.rate)}</td><td class="n">${money(l.amount)}</td></tr>`).join('')}</table>` : ''; };
+  const terms = d.terms === '__custom' ? 'Custom date' : d.terms;
+  let el = $('#printArea'); if (!el) { el = document.createElement('div'); el.id = 'printArea'; document.body.appendChild(el); }
+  el.innerHTML = `<div class="pi">
+    <div class="pi-top"><div><b class="pi-co">${esc(o.name || 'King Energy')}</b><br>${nl(o.address)}${o.phone ? '<br>' + esc(o.phone) : ''}${o.email ? '<br>' + esc(o.email) : ''}</div>
+      <table class="pi-meta"><tr><td>Invoice No:</td><td>${esc(inv.number)}</td></tr><tr><td>Invoice Date:</td><td>${esc(longDate((inv.ready_at || nowIso()).slice(0, 10)))}</td></tr><tr><td>Delivery Date:</td><td>${esc(longDate(inv.day))}</td></tr>${d.po_number ? `<tr><td>P.O. No:</td><td>${esc(d.po_number)}</td></tr>` : ''}</table></div>
+    ${o.remit_to ? `<div class="pi-remit"><b>Remit To:</b><br>${nl(o.remit_to)}</div>` : ''}
+    <div class="pi-to"><div><b>Bill To:</b><br>${esc(st.name || inv.store_name)}${st.owner_name ? '<br>Attn: ' + esc(st.owner_name) : ''}<br>${nl(st.address)}</div><div><b>Ship To:</b><br>${esc(st.name || inv.store_name)}<br>${nl(st.address)}</div></div>
+    ${sect('fuel', 'Fuel', [['Description'], ['BOL No'], ['Units', 1], ['Unit Price', 1], ['Total', 1]])}
+    ${sect('freight', 'Freight Summary', [['Description'], ['Units', 1], ['Unit Price', 1], ['Total', 1]])}
+    ${sect('tax', 'Tax and Other Charges Summary', [['Description'], ['Basis', 1], ['Rate', 1], ['Total', 1]])}
+    ${sect('other', 'Other', [['Description'], ['Total', 1]])}
+    <div class="pi-total">Invoice Total <b>${money(invTotal(ls))}</b></div>
+    <p><b>Payment terms:</b> Due by ${esc(longDate(d.due_date))} (${esc(terms)})</p>
+    ${d.notes ? `<p>${nl(d.notes)}</p>` : ''}
+    <p class="pi-foot">${esc(o.footer || 'Thank you for your business!')}</p></div>`;
+  document.body.classList.add('printing');
+  const done = () => { document.body.classList.remove('printing'); window.removeEventListener('afterprint', done); };
+  window.addEventListener('afterprint', done);
+  setTimeout(() => window.print(), 50);
+}
+function companyView() {
+  const o = S.office || {};
+  const taxRow = t => `<div class="group" data-tax="${t.id}"><input class="in" data-tf="name" value="${esc(t.name)}" placeholder="Tax name">
+    <label class="f">Rate ($ per gallon)</label><input class="in" data-tf="rate" inputmode="decimal" value="${esc(rate6(t.rate))}">
+    <div class="row">${GRADES.map(([k, l]) => `<label class="chk"><input type="checkbox" data-tg="${k}"${(t.grades || []).includes(k) ? ' checked' : ''}> ${l}</label>`).join('')}</div>
+    <p><button type="button" class="btn danger" data-act="tax-del" data-id="${t.id}">Remove this tax</button></p></div>`;
+  return `<form id="companyForm"><div class="group"><div class="group-t">🏢 Printed at the top of every invoice</div>
+    <label class="f">Company name</label><input class="in" name="name" value="${esc(o.name)}" placeholder="King Energy LLC">
+    <label class="f">Address</label><textarea class="in" name="address" placeholder="Street&#10;City, KY ZIP">${esc(o.address)}</textarea>
+    <label class="f">Phone</label><input class="in" name="phone" value="${esc(o.phone)}">
+    <label class="f">Email</label><input class="in" name="email" value="${esc(o.email)}">
+    <label class="f">Remit to (where checks go, if different)</label><textarea class="in" name="remit_to">${esc(o.remit_to)}</textarea>
+    <label class="f">Line at the bottom</label><input class="in" name="footer" value="${esc(o.footer)}" placeholder="Thank you for your business!">
+    <p></p><button class="btn go wide" type="submit">Save company info</button></div></form>
+    <h2 class="sec">Taxes and fees per gallon</h2>
+    <p class="muted">Each tax is added to an invoice for the fuels you tick. The starting list came from your sample invoice and covers gasoline only. Add diesel and kerosene taxes yourself.</p>
+    <form id="taxForm">${S.taxes.map(taxRow).join('') || '<p class="empty">No taxes yet.</p>'}
+      <p><button type="button" class="btn" data-act="tax-add">+ Add a tax</button></p>
+      ${S.taxes.length ? '<button class="btn go wide" type="submit">Save taxes</button>' : ''}</form>`;
+}
 const comingSoon = (icon, what) =>`<p class="empty" style="margin-top:40px"><span style="font-size:44px">${icon}</span><br>${what} will live here.<br>This page is being built next.</p>`;
 
 function renderMain() {
@@ -576,6 +748,8 @@ function renderMain() {
     : S.tab === 'stores' ? `<input class="in" id="search" type="search" placeholder="Search stores…" value="${esc(S.search)}" style="margin-bottom:12px"><div id="storeList">${storeCards()}</div>`
     : S.tab === 'orders' ? ordersView()
     : S.tab === 'bols' ? dlvView()
+    : S.tab === 'invoices' ? invView()
+    : S.tab === 'company' ? companyView()
     : staffView();
   const fab = S.tab === 'tasks' ? ['new-task', 'task'] : S.tab === 'stores' ? ['new-store', 'store'] : S.tab === 'orders' ? ['new-order', 'order'] : S.tab === 'bols' ? ['new-dlv', 'delivery'] : null;
   document.body.classList.add('has-side');
@@ -607,6 +781,7 @@ function renderSheet() {
   else if (sh.type === 'store') { el.innerHTML = storeSheet(sh); loadThumbs(); }
   else if (sh.type === 'order') el.innerHTML = orderSheet(sh);
   else if (sh.type === 'dlv') el.innerHTML = dlvSheet(sh);
+  else if (sh.type === 'inv') el.innerHTML = invSheet(sh);
   else if (sh.type === 'settings') el.innerHTML = settingsSheet();
   else if (sh.type === 'activity') el.innerHTML = activitySheet();
 }
@@ -785,6 +960,22 @@ const ACT = {
   'demo-login': async el => { await db.signIn(el.dataset.v); await start(); },
   tab: el => { S.tab = el.dataset.v; S.menuOpen = false; renderMain(); window.scrollTo(0, 0); },
   menu: () => { S.menuOpen = !S.menuOpen; renderMain(); },
+  'open-inv': el => { const inv = S.invoices.find(x => x.id === el.dataset.id); if (inv) openSheet({ type: 'inv', id: inv.id, draft: invDraft(inv) }); },
+  'inv-bol': () => { const inv = S.invoices.find(x => x.id === S.sheet.id), x = inv && S.deliveries.find(r => r.id === inv.delivery_id); if (x) openViewer({ id: x.id, name: x.photo_name || ('BOL ' + x.bol_number + '.jpg'), path: x.photo_path, data: x.photo_data }); else toast('The delivery for this invoice is gone.'); },
+  'inv-line-add': () => { const d = readInvForm(); d.lines.push({ key: 'other:' + uid(), type: 'other', label: '', amount: null }); renderSheet(); },
+  'inv-line-del': el => { const d = readInvForm(); d.lines.splice(+el.dataset.i, 1); renderSheet(); },
+  'inv-ready': async () => { if (await saveInv('ready')) { toast('Invoice is ready. Tap Print to print or save it.'); renderSheet(); renderMain(); } },
+  'inv-unready': async () => { const inv = S.invoices.find(x => x.id === S.sheet.id); if (await saveInv('draft')) { S.sheet.draft = invDraft(inv); renderSheet(); renderMain(); } },
+  'inv-print': () => { const inv = S.invoices.find(x => x.id === S.sheet.id), d = readInvForm(); if (inv.status !== 'ready' && invMissing(d.lines)) { toast('A price is missing. Fill in the red boxes first.'); renderSheet(); return; } printInvoice(inv, d); },
+  'rack-save': async () => {
+    const day = ($('#rackDay') || {}).value || today(), rows = [];
+    document.querySelectorAll('[data-rack]').forEach(el => { const v = numOrNull(el.value); if (v != null) rows.push({ id: day + '|' + el.dataset.rack, day, grade: el.dataset.rack, price: v, updated_by: S.me, updated_at: nowIso() }); });
+    if (!rows.length) { toast('Type at least one rack price.'); return; }
+    const okay = await safe(async () => { for (const r of rows) await db.upsert('rack_prices', r); return true; }, 'Rack prices were NOT saved.');
+    if (okay) toast('Rack prices saved for ' + niceDate(day) + '. Drafts for that day now use them.'); refresh();
+  },
+  'tax-add': async () => { await safe(() => db.insert('tax_rates', { id: uid(), name: 'New tax', rate: 0, grades: [], sort: S.taxes.reduce((m, t) => Math.max(m, t.sort || 0), 0) + 1, active: true, updated_by: S.me, updated_at: nowIso() }), 'Could not add the tax.'); refresh(); },
+  'tax-del': async el => { const t = S.taxes.find(x => x.id === el.dataset.id); if (!t || !confirm('Remove “' + t.name + '”? Drafts stop adding it. Ready invoices keep it.')) return; await safe(() => db.remove('tax_rates', t.id), 'Could not remove the tax.'); refresh(); },
   'new-dlv': () => openSheet({ type: 'dlv', id: null, draft: dlvDraft(null) }),
   'open-dlv': el => { const x = S.deliveries.find(r => r.id === el.dataset.id); if (x) openSheet({ type: 'dlv', id: x.id, draft: dlvDraft(x) }); },
   'dlv-photo': () => { const x = S.deliveries.find(r => r.id === S.sheet.id); if (x) openViewer({ id: x.id, name: x.photo_name || ('BOL ' + x.bol_number + '.jpg'), path: x.photo_path, data: x.photo_data }); },
@@ -984,6 +1175,17 @@ document.addEventListener('submit', async e => {
       await safe(() => db.update('fuel_orders', old.id, base), 'The changes were NOT saved.');
       toast('Order changed.'); refresh();
     }
+  } else if (f.id === 'invForm') {
+    if (await saveInv('draft')) { toast('Draft saved.'); renderSheet(); renderMain(); }
+  } else if (f.id === 'companyForm') {
+    const row = { id: 'main', updated_by: S.me, updated_at: nowIso() };
+    ['name', 'address', 'phone', 'email', 'remit_to', 'footer'].forEach(k => { row[k] = f.elements[k].value.trim(); });
+    if (await safe(async () => { await db.upsert('office_info', row); return true; }, 'Company info was NOT saved.')) toast('Company info saved.');
+    refresh();
+  } else if (f.id === 'taxForm') {
+    const rows = [...f.querySelectorAll('[data-tax]')].map(g => ({ id: g.dataset.tax, name: g.querySelector('[data-tf=name]').value.trim() || 'Tax', rate: numOrNull(g.querySelector('[data-tf=rate]').value) || 0, grades: [...g.querySelectorAll('[data-tg]:checked')].map(c => c.dataset.tg), updated_by: S.me, updated_at: nowIso() }));
+    if (await safe(async () => { for (const r of rows) await db.update('tax_rates', r.id, r); return true; }, 'Taxes were NOT saved.')) toast('Taxes saved. Drafts use the new rates; ready invoices do not change.');
+    refresh();
   } else if (f.id === 'dlvForm') {
     const d = readDlvForm(), isNew = !S.sheet.id, old = isNew ? null : S.deliveries.find(x => x.id === S.sheet.id);
     if (!isNew && S.role !== 'partner') return;
@@ -1035,6 +1237,12 @@ document.addEventListener('change', async e => {
     }
     if (S.sheet && S.sheet.id === taskId) renderSheet();
     renderMain();
+  } else if (el.id === 'rackDay') {
+    S.rackDay = el.value || today(); renderMain();
+  } else if (el.closest && el.closest('#invForm') && (el.dataset.li !== undefined || el.id === 'invTerms')) {
+    const d = readInvForm();
+    if (el.id === 'invTerms' && d.terms !== '__custom') { const inv = S.invoices.find(x => x.id === S.sheet.id); d.due_date = dueFrom(inv.day, d.terms); }
+    renderSheet();
   } else if (el.id === 'dlvOrder') {
     const d = readDlvForm(), o = S.orders.find(x => x.id === el.value);
     d.order_id = o ? o.id : '';
