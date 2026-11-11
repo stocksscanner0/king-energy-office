@@ -47,6 +47,7 @@ function demoDb() {
   try { d = JSON.parse(localStorage.getItem(KEY)); } catch (e) { /* storage blocked */ }
   if (!d) d = seed();
   d.store_files = d.store_files || []; d.activity = d.activity || []; d.store_pricing = d.store_pricing || []; d.staff = d.staff || []; d.fuel_orders = d.fuel_orders || []; d.deliveries = d.deliveries || [];
+  d.payments = d.payments || []; d.payment_allocations = d.payment_allocations || [];
   d.invoices = d.invoices || []; d.office_info = d.office_info || []; d.rack_prices = d.rack_prices || [];
   if (!d.tax_rates) d.tax_rates = DEFAULT_TAXES.map((t, i) => ({ id: uid(), name: t[0], rate: t[1], grades: ['regular', 'premium'], sort: i + 1, active: true }));
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(d)); } catch (e) { /* ignore */ } };
@@ -79,7 +80,8 @@ function demoDb() {
     async remove(t, id) {
       const gone = d[t].find(x => x.id === id);
       d[t] = d[t].filter(x => x.id !== id);
-      if (t === 'deliveries') d.invoices = d.invoices.filter(i => i.delivery_id !== id);
+      if (t === 'deliveries') { const ids = d.invoices.filter(i => i.delivery_id === id).map(i => i.id); d.invoices = d.invoices.filter(i => i.delivery_id !== id); d.payment_allocations = d.payment_allocations.filter(a => !ids.includes(a.invoice_id)); }
+      if (t === 'payments') d.payment_allocations = d.payment_allocations.filter(a => a.payment_id !== id);
       if (t === 'deliveries' && gone && gone.order_id) { const o = d.fuel_orders.find(x => x.id === gone.order_id); if (o && o.status === 'delivered') o.status = 'new'; }
       if (t === 'tasks') { d.events = d.events.filter(e => e.task_id !== id); d.files = d.files.filter(f => f.task_id !== id); }
       if (t === 'stores') { d.store_files = d.store_files.filter(f => f.store_id !== id); d.store_pricing = d.store_pricing.filter(p => p.id !== id); }
@@ -93,7 +95,7 @@ function demoDb() {
     async fileUrl(row) { const f = row.data ? row : d.files.concat(d.store_files).find(x => x.id === row.id); const blob = await (await fetch(f.data)).blob(); return URL.createObjectURL(blob); },
     async removeFile(row, table = 'files') { await this.remove(table, row.id); },
     async fn() { return {}; },
-    reset() { try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ } d = seed(); d.store_files = []; d.activity = []; d.store_pricing = []; d.staff = []; d.fuel_orders = []; d.deliveries = []; d.invoices = []; d.office_info = []; d.rack_prices = []; d.tax_rates = undefined; }
+    reset() { try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ } d = seed(); d.store_files = []; d.activity = []; d.store_pricing = []; d.staff = []; d.fuel_orders = []; d.deliveries = []; d.invoices = []; d.office_info = []; d.rack_prices = []; d.payments = []; d.payment_allocations = []; d.tax_rates = undefined; }
   };
 }
 
@@ -116,7 +118,7 @@ function supaDb() {
     async signOut() { await sb.auth.signOut(); },
     async setPassword(pw) { ok(await sb.auth.updateUser({ password: pw })); },
     async loadAll() {
-      const names = ['members', 'tasks', 'events', 'files', 'stores', 'store_files', 'activity', 'store_pricing', 'staff', 'fuel_orders', 'deliveries', 'invoices', 'office_info', 'tax_rates', 'rack_prices'];
+      const names = ['members', 'tasks', 'events', 'files', 'stores', 'store_files', 'activity', 'store_pricing', 'staff', 'fuel_orders', 'deliveries', 'invoices', 'office_info', 'tax_rates', 'rack_prices', 'payments', 'payment_allocations'];
       const [sl, tn] = await Promise.all([sb.rpc('store_list'), sb.rpc('team_names')]);
       const rs = await Promise.all(names.map(n => n === 'activity' ? sb.from(n).select('*').order('created_at', { ascending: false }).limit(100) : sb.from(n).select('*')));
       const out = {}; rs.forEach((r, i) => { out[names[i]] = ok(r); });
@@ -206,11 +208,11 @@ function pricingBlock(p) {
   </div>`;
 }
 const storeDraft = s => { const d = { p: pricingDraft(s.id ? S.store_pricing.find(x => x.id === s.id) : null), extra: (s.extra || []).map(x => ({ label: x.label, value: x.value })), newFiles: [], removeFiles: [], kind: 'site', customKind: '' }; STORE_FIELDS.forEach(([k]) => { d[k] = s[k] || ''; }); return d; };
-const ACT_ICON = { delivery: '🚚', order: '⛽', store: '🏪', task_new: '🆕', task_taken: '🙋' };
+const ACT_ICON = { payment: '💵', delivery: '🚚', order: '⛽', store: '🏪', task_new: '🆕', task_taken: '🙋' };
 const isImage = n => /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(n || '');
 const HUES = [210, 150, 28, 280, 345, 175, 50, 240];
 const thumbUrls = new Map();
-const S = { orders: [], deliveries: [], invoices: [], office: null, taxes: [], racks: [], storeList: [], team: [], staff: [], role: null, menuOpen: false, store_pricing: [], store_files: [], activity: [], me: null, members: [], tasks: [], events: [], files: [], stores: [], tab: 'tasks', filter: 'all', sheet: null, search: '', draftComment: '' };
+const S = { payments: [], allocs: [], orders: [], deliveries: [], invoices: [], office: null, taxes: [], racks: [], storeList: [], team: [], staff: [], role: null, menuOpen: false, store_pricing: [], store_files: [], activity: [], me: null, members: [], tasks: [], events: [], files: [], stores: [], tab: 'tasks', filter: 'all', sheet: null, search: '', draftComment: '' };
 const nameOf = email => { const m = S.members.find(x => x.email === email) || S.staff.find(x => x.email === email) || S.team.find(x => x.email === email); return m ? m.name : (email || ''); };
 // Who is this? A partner sees everything. Staff see only orders and BOLs. Anyone else is not let in.
 const roleOf = email => S.members.some(m => m.email === email) ? 'partner' : S.staff.some(s => s.email === email && s.active) ? 'staff' : null;
@@ -239,7 +241,8 @@ async function refresh() {
     S.tasks = d.tasks; S.events = d.events; S.files = d.files; S.stores = d.stores; S.store_files = d.store_files || []; S.store_pricing = d.store_pricing || []; S.staff = d.staff || [];
     S.orders = d.fuel_orders || []; S.deliveries = d.deliveries || [];
     S.invoices = d.invoices || []; S.office = (d.office_info || []).find(x => x.id === 'main') || null;
-    S.taxes = (d.tax_rates || []).slice().sort((a, b) => (a.sort || 0) - (b.sort || 0)); S.racks = d.rack_prices || []; S.storeList = d.store_list || []; S.team = d.team_names || [];
+    S.taxes = (d.tax_rates || []).slice().sort((a, b) => (a.sort || 0) - (b.sort || 0)); S.racks = d.rack_prices || [];
+    S.payments = d.payments || []; S.allocs = d.payment_allocations || []; S.storeList = d.store_list || []; S.team = d.team_names || [];
     if (S.role && !roleOf(S.me)) { await db.signOut(); S.me = null; S.role = null; closeSheet(); renderLogin('You have been signed out.'); return; }
     S.activity = (d.activity || []).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
   } catch (e) { console.error(e); toast('Could not load. Check your internet.'); return; }
@@ -467,7 +470,7 @@ function storeCards() {
 }
 
 /* The menu. 'partner' pages are hidden from staff here AND locked in storage. */
-const MENU = [['tasks', '✅', 'Tasks', 'partner'], ['stores', '🏪', 'Stores', 'partner'], ['orders', '⛽', 'Fuel orders', 'all'], ['bols', '🚚', 'Deliveries / BOL', 'all'], ['invoices', '🧾', 'Invoices', 'partner'], ['company', '🏢', 'Company & taxes', 'partner'], ['staff', '👥', 'Staff', 'partner']];
+const MENU = [['tasks', '✅', 'Tasks', 'partner'], ['stores', '🏪', 'Stores', 'partner'], ['orders', '⛽', 'Fuel orders', 'all'], ['bols', '🚚', 'Deliveries / BOL', 'all'], ['invoices', '🧾', 'Invoices', 'partner'], ['payments', '💵', 'Payments', 'partner'], ['company', '🏢', 'Company & taxes', 'partner'], ['staff', '👥', 'Staff', 'partner']];
 const menuFor = () => MENU.filter(m => m[3] === 'all' || S.role === 'partner');
 
 function staffView() {
@@ -617,7 +620,7 @@ const invBol = inv => { const d = S.deliveries.find(x => x.id === inv.delivery_i
 function invCard(inv) {
   const ls = inv.status === 'draft' ? invLines(inv, inv.lines) : (inv.lines || []), miss = inv.status === 'draft' && invMissing(ls);
   return `<div class="card order-card" data-act="open-inv" data-id="${inv.id}">
-    <div class="card-top"><span class="pill ${inv.status === 'ready' ? 's-done' : 's-working'}">${inv.status === 'ready' ? 'Ready' : 'Draft'}</span><span class="pill">📅 ${esc(niceDate(inv.day))}</span>${miss ? '<span class="pill need-pill">Needs a price</span>' : ''}</div>
+    <div class="card-top"><span class="pill ${inv.status === 'ready' ? 's-done' : 's-working'}">${inv.status === 'ready' ? 'Ready' : 'Draft'}</span><span class="pill">📅 ${esc(niceDate(inv.day))}</span>${miss ? '<span class="pill need-pill">Needs a price</span>' : ''}${payPill(inv)}</div>
     <div class="card-title">${esc(inv.store_name || '')}</div>
     <div class="card-meta"><span>🧾 ${esc(inv.number)}</span><span>BOL #${esc(invBol(inv))}</span><span><b>${miss ? '—' : money(invTotal(ls))}</b></span></div></div>`;
 }
@@ -645,6 +648,7 @@ function invSheet(sh) {
   return `<div class="sheet-head"><button data-act="close">← Back</button><span>${esc(inv.number)}</span><span></span></div>
   <form class="sheet-body" id="invForm">
     <p class="row"><span class="pill ${edit ? 's-working' : 's-done'}">${edit ? 'Draft' : 'Ready'}</span><span class="muted">${esc(inv.store_name)} · BOL #${esc(invBol(inv))} · ${esc(niceDate(inv.day))}</span></p>
+    ${!edit ? `<p class="row">${payPill(inv)}<span>Paid <b>${money(invPaid(inv))}</b> · Still owed <b>${money(Math.max(0, invBalance(inv)))}</b></span></p>` : ''}
     <p><button type="button" class="btn" data-act="inv-bol">📷 See the BOL photo</button></p>
     ${miss && edit ? '<div class="banner need-banner">A price is missing. Save the rack price for this day on the Invoices page, or type the price in the red box.</div>' : ''}
     <div class="inv-wrap"><table class="inv-t"><tr><th>Item</th><th class="num">Gallons</th><th>Price / gal</th><th class="num">Amount</th>${edit ? '<th></th>' : ''}</tr>
@@ -764,6 +768,80 @@ function companyView() {
       <p><button type="button" class="btn" data-act="tax-add">+ Add a tax</button></p>
       ${S.taxes.length ? '<button class="btn go wide" type="submit">Save taxes</button>' : ''}</form>`;
 }
+/* ---- payments (partners only) ---- */
+const PAY_METHODS = ['Check', 'ACH / bank transfer', 'Card', 'Cash', 'Other'];
+const invPaid = (inv, skipPay) => r2(S.allocs.filter(a => a.invoice_id === inv.id && a.payment_id !== skipPay).reduce((s, a) => s + Number(a.amount), 0));
+const invBalance = (inv, skipPay) => r2(Number(inv.total || 0) - invPaid(inv, skipPay));
+const isOverdue = inv => inv.status === 'ready' && invBalance(inv) > 0.004 && inv.due_date && inv.due_date < today();
+function payPill(inv) {
+  if (inv.status !== 'ready') return '';
+  const bal = invBalance(inv), paid = invPaid(inv);
+  if (bal <= 0.004) return '<span class="pill s-done">Paid</span>';
+  return `<span class="pill${isOverdue(inv) ? ' need-pill' : ''}">${paid > 0 ? 'Part paid' : 'Unpaid'}${isOverdue(inv) ? ' · overdue' : ''}</span>`;
+}
+const payUsed = p => r2(S.allocs.filter(a => a.payment_id === p.id).reduce((s, a) => s + Number(a.amount), 0));
+const payCredit = p => r2(Number(p.amount) - payUsed(p));
+function payView() {
+  const ready = S.invoices.filter(i => i.status === 'ready');
+  const ids = [...new Set(ready.map(i => i.store_id).concat(S.payments.map(p => p.store_id)))];
+  const rows = ids.map(id => {
+    const inv = ready.filter(i => i.store_id === id), ps = S.payments.filter(p => p.store_id === id);
+    const name = (inv[0] || ps[0] || {}).store_name || '';
+    return { id, name, owed: r2(inv.reduce((s, i) => s + Math.max(0, invBalance(i)), 0)), late: r2(inv.filter(isOverdue).reduce((s, i) => s + invBalance(i), 0)), credit: r2(ps.reduce((s, p) => s + Math.max(0, payCredit(p)), 0)) };
+  }).filter(r => r.owed > 0.004 || r.credit > 0.004).sort((a, b) => b.late - a.late || b.owed - a.owed);
+  const tot = r2(rows.reduce((s, r) => s + r.owed, 0)), late = r2(rows.reduce((s, r) => s + r.late, 0));
+  const list = S.payments.slice().sort((a, b) => (b.day || '').localeCompare(a.day || '') || (b.created_at || '').localeCompare(a.created_at || ''));
+  return `<h2 class="sec">Who owes us</h2>
+    <div class="group money"><div class="total-line" style="margin:0;border:0;padding:0">Total owed: <b>${money(tot)}</b>${late > 0 ? ` · <b style="color:var(--red)">${money(late)} overdue</b>` : ''}</div></div>
+    ${rows.length ? rows.map(r => `<div class="card order-card"><div class="card-title">${esc(r.name)}</div>
+      <div class="card-meta"><span>Owes <b>${money(r.owed)}</b></span>${r.late > 0 ? `<span style="color:var(--red)"><b>${money(r.late)} overdue</b></span>` : ''}${r.credit > 0 ? `<span>💚 ${money(r.credit)} credit</span>` : ''}</div></div>`).join('') : '<p class="empty">Nobody owes anything right now. Only invoices marked Ready count.</p>'}
+    <h2 class="sec">Payments (${list.length})</h2>
+    ${list.length ? list.map(p => { const cr = payCredit(p); return `<div class="card order-card" data-act="open-pay" data-id="${p.id}">
+      <div class="card-top"><span class="pill s-done">${money(p.amount)}</span><span class="pill">📅 ${esc(niceDate(p.day))}</span>${cr > 0.004 ? `<span class="pill">💚 ${money(cr)} credit left</span>` : ''}</div>
+      <div class="card-title">${esc(p.store_name)}</div>
+      <div class="card-meta"><span>${esc(p.method || '')}${p.reference ? ' #' + esc(p.reference) : ''}</span><span>✍️ ${esc(nameOf(p.created_by))}</span></div></div>`; }).join('') : '<p class="empty">No payments yet. Tap “+ New payment”.</p>'}`;
+}
+function payDraft(p) {
+  const alloc = {}; if (p) S.allocs.filter(a => a.payment_id === p.id).forEach(a => { alloc[a.invoice_id] = String(Number(a.amount)); });
+  return { store_id: (p && p.store_id) || '', day: (p && p.day) || today(), amount: p ? String(Number(p.amount)) : '', method: (p && p.method) || 'Check', reference: (p && p.reference) || '', notes: (p && p.notes) || '', alloc };
+}
+function payRows(sh) {
+  const d = sh.draft;
+  return S.invoices.filter(i => i.status === 'ready' && i.store_id === d.store_id && (invBalance(i, sh.id) > 0.004 || d.alloc[i.id]))
+    .sort((a, b) => (a.due_date || a.day || '').localeCompare(b.due_date || b.day || '') || (a.number || '').localeCompare(b.number || ''));
+}
+function autoApply(sh) {
+  const d = sh.draft; let left = gal(d.amount) ? numOrNull(d.amount) : 0; d.alloc = {};
+  payRows(sh).forEach(i => { const bal = invBalance(i, sh.id), use = r2(Math.min(bal, left)); if (use > 0.004) { d.alloc[i.id] = String(use); left = r2(left - use); } });
+}
+function paySheet(sh) {
+  const d = sh.draft, isNew = !sh.id, p = sh.id ? S.payments.find(x => x.id === sh.id) : null; if (sh.id && !p) return '';
+  const stores = S.stores.slice().sort((a, b) => a.name.localeCompare(b.name)), rows = d.store_id ? payRows(sh) : [];
+  const amt = numOrNull(d.amount) || 0, used = r2(Object.values(d.alloc).reduce((s, v) => s + (numOrNull(v) || 0), 0)), left = r2(amt - used);
+  return `<div class="sheet-head"><button data-act="close">${isNew ? '✕ Cancel' : '← Back'}</button><span>${isNew ? 'New payment' : 'Payment'}</span><span></span></div>
+  <form class="sheet-body" id="payForm">
+    ${p ? `<p class="muted">Entered by ${esc(nameOf(p.created_by))} · ${esc(niceTime(p.created_at))}</p>` : ''}
+    <label class="f">Store</label><select class="in" name="store_id" id="payStore" required><option value="">Pick a store…</option>${stores.map(s => `<option value="${s.id}"${d.store_id === s.id ? ' selected' : ''}>${esc(s.name)}</option>`).join('')}</select>
+    <label class="f">Amount received ($)</label><input class="in" name="amount" id="payAmount" inputmode="decimal" value="${esc(d.amount)}" placeholder="0.00" required>
+    <label class="f">Date received</label><input class="in" type="date" name="day" value="${esc(d.day)}" required>
+    <label class="f">How they paid</label><select class="in" name="method">${PAY_METHODS.map(m => `<option${d.method === m ? ' selected' : ''}>${m}</option>`).join('')}</select>
+    <label class="f">Check or reference number (optional)</label><input class="in" name="reference" value="${esc(d.reference)}">
+    ${d.store_id ? `<div class="group"><div class="group-t">🧾 Put it toward these invoices <small>(oldest first)</small></div>
+      ${rows.length ? `<div class="inv-wrap"><table class="inv-t"><tr><th>Invoice</th><th>Due</th><th class="num">Owed</th><th class="num">Apply</th></tr>
+        ${rows.map(i => `<tr><td>${esc(i.number)}</td><td>${esc(i.due_date ? niceDate(i.due_date) : '')}${isOverdue(i) ? ' <b style="color:var(--red)">late</b>' : ''}</td><td class="num">${money(invBalance(i, sh.id))}</td><td><input class="in num" data-alloc="${i.id}" inputmode="decimal" placeholder="0.00" value="${esc(d.alloc[i.id] || '')}"></td></tr>`).join('')}</table></div>
+        <p><button type="button" class="btn" data-act="pay-auto">Apply oldest first</button></p>` : '<p class="muted">This store has no unpaid Ready invoices. The whole amount stays as credit.</p>'}
+      <div class="total-line">Applied: <b>${money(used)}</b> · Left as credit: <b${left < -0.004 ? ' style="color:var(--red)"' : ''}>${money(left)}</b></div></div>` : ''}
+    <label class="f">Notes</label><textarea class="in" name="notes">${esc(d.notes)}</textarea>
+    <p></p><button class="btn go wide" type="submit">${isNew ? 'Save payment' : 'Save changes'}</button>
+    ${p ? '<p style="margin-top:32px"><button type="button" class="btn danger" data-act="pay-del">Delete this payment</button></p>' : ''}
+  </form>`;
+}
+function readPayForm() {
+  const f = $('#payForm'), d = S.sheet && S.sheet.draft; if (!f || !d) return d;
+  ['store_id', 'amount', 'day', 'method', 'reference', 'notes'].forEach(k => { if (f.elements[k]) d[k] = f.elements[k].value; });
+  f.querySelectorAll('[data-alloc]').forEach(el => { if (el.value.trim()) d.alloc[el.dataset.alloc] = el.value.trim(); else delete d.alloc[el.dataset.alloc]; });
+  return d;
+}
 const comingSoon = (icon, what) =>`<p class="empty" style="margin-top:40px"><span style="font-size:44px">${icon}</span><br>${what} will live here.<br>This page is being built next.</p>`;
 
 function renderMain() {
@@ -779,9 +857,10 @@ function renderMain() {
     : S.tab === 'orders' ? ordersView()
     : S.tab === 'bols' ? dlvView()
     : S.tab === 'invoices' ? invView()
+    : S.tab === 'payments' ? payView()
     : S.tab === 'company' ? companyView()
     : staffView();
-  const fab = S.tab === 'tasks' ? ['new-task', 'task'] : S.tab === 'stores' ? ['new-store', 'store'] : S.tab === 'orders' ? ['new-order', 'order'] : S.tab === 'bols' ? ['new-dlv', 'delivery'] : null;
+  const fab = S.tab === 'tasks' ? ['new-task', 'task'] : S.tab === 'stores' ? ['new-store', 'store'] : S.tab === 'orders' ? ['new-order', 'order'] : S.tab === 'bols' ? ['new-dlv', 'delivery'] : S.tab === 'payments' ? ['new-pay', 'payment'] : null;
   document.body.classList.add('has-side');
   $('#app').innerHTML = `
     <nav class="side${S.menuOpen ? ' open' : ''}"><div class="side-t">KE Office</div>
@@ -812,6 +891,7 @@ function renderSheet() {
   else if (sh.type === 'order') el.innerHTML = orderSheet(sh);
   else if (sh.type === 'dlv') el.innerHTML = dlvSheet(sh);
   else if (sh.type === 'inv') el.innerHTML = invSheet(sh);
+  else if (sh.type === 'pay') el.innerHTML = paySheet(sh);
   else if (sh.type === 'settings') el.innerHTML = settingsSheet();
   else if (sh.type === 'activity') el.innerHTML = activitySheet();
 }
@@ -995,7 +1075,7 @@ const ACT = {
   'inv-line-add': () => { const d = readInvForm(); d.lines.push({ key: 'other:' + uid(), type: 'other', label: '', amount: null }); renderSheet(); },
   'inv-line-del': el => { const d = readInvForm(); d.lines.splice(+el.dataset.i, 1); renderSheet(); },
   'inv-ready': async () => { if (await saveInv('ready')) { toast('Invoice is ready. Tap Print to print or save it.'); renderSheet(); renderMain(); } },
-  'inv-unready': async () => { const inv = S.invoices.find(x => x.id === S.sheet.id); if (await saveInv('draft')) { S.sheet.draft = invDraft(inv); renderSheet(); renderMain(); } },
+  'inv-unready': async () => { const inv = S.invoices.find(x => x.id === S.sheet.id); if (invPaid(inv) > 0 && !confirm('Payments are already put toward this invoice. If you change the total, check the payment too. Go on?')) return; if (await saveInv('draft')) { S.sheet.draft = invDraft(inv); renderSheet(); renderMain(); } },
   'inv-print': () => { const inv = S.invoices.find(x => x.id === S.sheet.id), d = readInvForm(); if (inv.status !== 'ready' && invMissing(d.lines)) { toast('A price is missing. Fill in the red boxes first.'); renderSheet(); return; } printInvoice(inv, d); },
   'rack-save': async () => {
     const day = ($('#rackDay') || {}).value || today(), rows = [];
@@ -1006,6 +1086,14 @@ const ACT = {
   },
   'tax-add': async () => { await safe(() => db.insert('tax_rates', { id: uid(), name: 'New tax', rate: 0, grades: [], sort: S.taxes.reduce((m, t) => Math.max(m, t.sort || 0), 0) + 1, active: true, updated_by: S.me, updated_at: nowIso() }), 'Could not add the tax.'); refresh(); },
   'tax-del': async el => { const t = S.taxes.find(x => x.id === el.dataset.id); if (!t || !confirm('Remove “' + t.name + '”? Drafts stop adding it. Ready invoices keep it.')) return; await safe(() => db.remove('tax_rates', t.id), 'Could not remove the tax.'); refresh(); },
+  'new-pay': () => openSheet({ type: 'pay', id: null, draft: payDraft(null) }),
+  'open-pay': el => { const p = S.payments.find(x => x.id === el.dataset.id); if (p) openSheet({ type: 'pay', id: p.id, draft: payDraft(p) }); },
+  'pay-auto': () => { readPayForm(); autoApply(S.sheet); renderSheet(); },
+  'pay-del': async () => {
+    const p = S.payments.find(x => x.id === S.sheet.id); if (!p) return;
+    if (!confirm('Delete the ' + money(p.amount) + ' payment from ' + p.store_name + '? Its invoices go back to unpaid. This cannot be undone.')) return;
+    closeSheet(); await safe(() => db.remove('payments', p.id), 'Could not delete the payment.'); toast('Payment deleted.'); refresh();
+  },
   'new-dlv': () => openSheet({ type: 'dlv', id: null, draft: dlvDraft(null) }),
   'open-dlv': el => { const x = S.deliveries.find(r => r.id === el.dataset.id); if (x) openSheet({ type: 'dlv', id: x.id, draft: dlvDraft(x) }); },
   'dlv-photo': () => { const x = S.deliveries.find(r => r.id === S.sheet.id); if (x) openViewer({ id: x.id, name: x.photo_name || ('BOL ' + x.bol_number + '.jpg'), path: x.photo_path, data: x.photo_data }); },
@@ -1207,6 +1295,26 @@ document.addEventListener('submit', async e => {
       await safe(() => db.update('fuel_orders', old.id, base), 'The changes were NOT saved.');
       toast('Order changed.'); refresh();
     }
+  } else if (f.id === 'payForm') {
+    const d = readPayForm(), sh = S.sheet, isNew = !sh.id, amt = numOrNull(d.amount), st = S.stores.find(s => s.id === d.store_id);
+    if (!st) { toast('Pick a store first.'); return; }
+    if (!amt || amt <= 0) { toast('Type the amount received.'); return; }
+    const allocs = []; let bad = '';
+    payRows(sh).forEach(i => { const v = numOrNull(d.alloc[i.id]); if (v == null || v === 0) return; if (v < 0) bad = 'Amounts cannot be negative.'; else if (v > invBalance(i, sh.id) + 0.004) bad = 'More than ' + i.number + ' still owes.'; allocs.push({ invoice_id: i.id, amount: r2(v) }); });
+    if (!bad && r2(allocs.reduce((s, a) => s + a.amount, 0)) > amt + 0.004) bad = 'You applied more than the payment amount.';
+    if (bad) { toast(bad); return; }
+    const id = sh.id || uid(), stamp = nowIso();
+    const row = { store_id: st.id, store_name: st.name, day: d.day, amount: r2(amt), method: d.method, reference: d.reference.trim(), notes: d.notes.trim(), updated_by: S.me, updated_at: stamp };
+    const okay = await safe(async () => {
+      if (isNew) await db.insert('payments', { id, ...row, notified: false, created_by: S.me, created_at: stamp });
+      else { await db.update('payments', id, row); for (const a of S.allocs.filter(x => x.payment_id === id)) await db.remove('payment_allocations', a.id); }
+      for (const a of allocs) await db.insert('payment_allocations', { id: uid(), payment_id: id, ...a });
+      return true;
+    }, 'The payment was NOT fully saved. Check your internet, then open it and check.');
+    if (!okay) return;
+    closeSheet(); toast(isNew ? 'Payment saved. Your partners are being told.' : 'Payment changed.');
+    if (isNew) ping('payment_new', { payment_id: id });
+    refresh();
   } else if (f.id === 'invForm') {
     if (await saveInv('draft')) { toast('Draft saved.'); renderSheet(); renderMain(); }
   } else if (f.id === 'companyForm') {
@@ -1269,6 +1377,10 @@ document.addEventListener('change', async e => {
     }
     if (S.sheet && S.sheet.id === taskId) renderSheet();
     renderMain();
+  } else if (el.id === 'payStore' || el.id === 'payAmount') {
+    readPayForm(); autoApply(S.sheet); renderSheet();
+  } else if (el.dataset.alloc !== undefined) {
+    readPayForm(); renderSheet();
   } else if (el.id === 'rackDay') {
     S.rackDay = el.value || today(); renderMain();
   } else if (el.closest && el.closest('#invForm') && (el.dataset.li !== undefined || el.id === 'invTerms')) {
