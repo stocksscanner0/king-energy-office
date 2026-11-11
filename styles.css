@@ -202,3 +202,9 @@ select.in { width: 100%; border: 1px solid var(--line); background: var(--card);
   body.has-side .top, body.has-side main { margin-left: 230px; }
   body.has-side #sheet, body.has-side #viewer { left: 230px; }
 }
+/* ---- fuel orders ---- */
+.total-line { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--line); font-size: 16px; }
+.order-card { border-left: 5px solid #2e9e6b; }
+.order-card.os-delivered { border-left-color: var(--muted); }
+.order-card.os-cancelled { border-left-color: var(--muted); opacity: .6; }
+.order-card .card-top { display: flex; gap: 6px; }
