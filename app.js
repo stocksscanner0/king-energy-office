@@ -818,6 +818,22 @@ function paySheet(sh) {
   const d = sh.draft, isNew = !sh.id, p = sh.id ? S.payments.find(x => x.id === sh.id) : null; if (sh.id && !p) return '';
   const stores = S.stores.slice().sort((a, b) => a.name.localeCompare(b.name)), rows = d.store_id ? payRows(sh) : [];
   const amt = numOrNull(d.amount) || 0, used = r2(Object.values(d.alloc).reduce((s, v) => s + (numOrNull(v) || 0), 0)), left = r2(amt - used);
+  if (sh.confirming) {
+    const st = S.stores.find(s => s.id === d.store_id) || {};
+    const picked = rows.filter(i => numOrNull(d.alloc[i.id]) > 0);
+    return `<div class="sheet-head"><button data-act="pay-back">← Change</button><span>Check before saving</span><span></span></div>
+    <form class="sheet-body" id="payForm">
+      <div class="group money"><div class="group-t">💵 ${isNew ? 'New payment' : 'Changed payment'}</div>
+        <p style="font-size:22px;margin:4px 0"><b>${money(amt)}</b></p>
+        <p>From <b>${esc(st.name || '')}</b><br>${esc(d.method)}${d.reference ? ' #' + esc(d.reference) : ''} · ${esc(niceDate(d.day))}</p></div>
+      <div class="group"><div class="group-t">🧾 Goes toward</div>
+        ${picked.length ? `<table class="inv-t">${picked.map(i => { const v = numOrNull(d.alloc[i.id]), after = r2(invBalance(i, sh.id) - v); return `<tr><td>${esc(i.number)}</td><td class="num"><b>${money(v)}</b></td><td class="num muted">${after <= 0.004 ? 'paid in full' : money(after) + ' still owed'}</td></tr>`; }).join('')}</table>` : '<p class="muted">No invoice picked.</p>'}
+        ${left > 0.004 ? `<p>Left as credit for ${esc(st.name || 'the store')}: <b>${money(left)}</b></p>` : ''}</div>
+      ${d.notes ? `<p class="muted">Notes: ${esc(d.notes)}</p>` : ''}
+      <button class="btn go wide" type="submit">✅ Confirm and save</button>
+      <p></p><button type="button" class="btn wide" data-act="pay-back">← Go back and change</button>
+    </form>`;
+  }
   return `<div class="sheet-head"><button data-act="close">${isNew ? '✕ Cancel' : '← Back'}</button><span>${isNew ? 'New payment' : 'Payment'}</span><span></span></div>
   <form class="sheet-body" id="payForm">
     ${p ? `<p class="muted">Entered by ${esc(nameOf(p.created_by))} · ${esc(niceTime(p.created_at))}</p>` : ''}
@@ -826,13 +842,14 @@ function paySheet(sh) {
     <label class="f">Date received</label><input class="in" type="date" name="day" value="${esc(d.day)}" required>
     <label class="f">How they paid</label><select class="in" name="method">${PAY_METHODS.map(m => `<option${d.method === m ? ' selected' : ''}>${m}</option>`).join('')}</select>
     <label class="f">Check or reference number (optional)</label><input class="in" name="reference" value="${esc(d.reference)}">
-    ${d.store_id ? `<div class="group"><div class="group-t">🧾 Put it toward these invoices <small>(oldest first)</small></div>
-      ${rows.length ? `<div class="inv-wrap"><table class="inv-t"><tr><th>Invoice</th><th>Due</th><th class="num">Owed</th><th class="num">Apply</th></tr>
-        ${rows.map(i => `<tr><td>${esc(i.number)}</td><td>${esc(i.due_date ? niceDate(i.due_date) : '')}${isOverdue(i) ? ' <b style="color:var(--red)">late</b>' : ''}</td><td class="num">${money(invBalance(i, sh.id))}</td><td><input class="in num" data-alloc="${i.id}" inputmode="decimal" placeholder="0.00" value="${esc(d.alloc[i.id] || '')}"></td></tr>`).join('')}</table></div>
-        <p><button type="button" class="btn" data-act="pay-auto">Apply oldest first</button></p>` : '<p class="muted">This store has no unpaid Ready invoices. The whole amount stays as credit.</p>'}
+    ${d.store_id ? `<div class="group"><div class="group-t">🧾 Tick the invoices this payment is for</div>
+      ${rows.length ? `<div class="inv-wrap"><table class="inv-t"><tr><th></th><th>Invoice</th><th>Due</th><th class="num">Owed</th><th class="num">Apply</th></tr>
+        ${rows.map(i => `<tr><td><input type="checkbox" class="pick" data-pick="${i.id}"${numOrNull(d.alloc[i.id]) > 0 ? ' checked' : ''}></td><td>${esc(i.number)}</td><td>${esc(i.due_date ? niceDate(i.due_date) : '')}${isOverdue(i) ? ' <b style="color:var(--red)">late</b>' : ''}</td><td class="num">${money(invBalance(i, sh.id))}</td><td><input class="in num" data-alloc="${i.id}" inputmode="decimal" placeholder="0.00" value="${esc(d.alloc[i.id] || '')}"></td></tr>`).join('')}</table></div>
+        <p class="muted">Ticking a box puts as much as it owes (or what's left of the payment). You can type a different amount.</p>
+        <p><button type="button" class="btn" data-act="pay-auto">Or: apply oldest first</button></p>` : '<p class="muted">This store has no unpaid Ready invoices. The whole amount stays as credit.</p>'}
       <div class="total-line">Applied: <b>${money(used)}</b> · Left as credit: <b${left < -0.004 ? ' style="color:var(--red)"' : ''}>${money(left)}</b></div></div>` : ''}
     <label class="f">Notes</label><textarea class="in" name="notes">${esc(d.notes)}</textarea>
-    <p></p><button class="btn go wide" type="submit">${isNew ? 'Save payment' : 'Save changes'}</button>
+    <p></p><button class="btn go wide" type="submit">Next: check it →</button>
     ${p ? '<p style="margin-top:32px"><button type="button" class="btn danger" data-act="pay-del">Delete this payment</button></p>' : ''}
   </form>`;
 }
@@ -1088,6 +1105,7 @@ const ACT = {
   'tax-del': async el => { const t = S.taxes.find(x => x.id === el.dataset.id); if (!t || !confirm('Remove “' + t.name + '”? Drafts stop adding it. Ready invoices keep it.')) return; await safe(() => db.remove('tax_rates', t.id), 'Could not remove the tax.'); refresh(); },
   'new-pay': () => openSheet({ type: 'pay', id: null, draft: payDraft(null) }),
   'open-pay': el => { const p = S.payments.find(x => x.id === el.dataset.id); if (p) openSheet({ type: 'pay', id: p.id, draft: payDraft(p) }); },
+  'pay-back': () => { S.sheet.confirming = false; renderSheet(); },
   'pay-auto': () => { readPayForm(); autoApply(S.sheet); renderSheet(); },
   'pay-del': async () => {
     const p = S.payments.find(x => x.id === S.sheet.id); if (!p) return;
@@ -1303,6 +1321,8 @@ document.addEventListener('submit', async e => {
     payRows(sh).forEach(i => { const v = numOrNull(d.alloc[i.id]); if (v == null || v === 0) return; if (v < 0) bad = 'Amounts cannot be negative.'; else if (v > invBalance(i, sh.id) + 0.004) bad = 'More than ' + i.number + ' still owes.'; allocs.push({ invoice_id: i.id, amount: r2(v) }); });
     if (!bad && r2(allocs.reduce((s, a) => s + a.amount, 0)) > amt + 0.004) bad = 'You applied more than the payment amount.';
     if (bad) { toast(bad); return; }
+    if (!sh.confirming) { sh.confirming = true; renderSheet(); $('#sheet').scrollTop = 0; return; }
+    const sub = f.querySelector('button[type=submit]'); if (sub) { sub.disabled = true; sub.textContent = 'Saving…'; }
     const id = sh.id || uid(), stamp = nowIso();
     const row = { store_id: st.id, store_name: st.name, day: d.day, amount: r2(amt), method: d.method, reference: d.reference.trim(), notes: d.notes.trim(), updated_by: S.me, updated_at: stamp };
     const okay = await safe(async () => {
@@ -1311,7 +1331,7 @@ document.addEventListener('submit', async e => {
       for (const a of allocs) await db.insert('payment_allocations', { id: uid(), payment_id: id, ...a });
       return true;
     }, 'The payment was NOT fully saved. Check your internet, then open it and check.');
-    if (!okay) return;
+    if (!okay) { if (sub) { sub.disabled = false; sub.textContent = '✅ Confirm and save'; } return; }
     closeSheet(); toast(isNew ? 'Payment saved. Your partners are being told.' : 'Payment changed.');
     if (isNew) ping('payment_new', { payment_id: id });
     refresh();
@@ -1377,8 +1397,20 @@ document.addEventListener('change', async e => {
     }
     if (S.sheet && S.sheet.id === taskId) renderSheet();
     renderMain();
-  } else if (el.id === 'payStore' || el.id === 'payAmount') {
-    readPayForm(); autoApply(S.sheet); renderSheet();
+  } else if (el.id === 'payStore') {
+    const d = readPayForm(); d.alloc = {}; renderSheet();
+  } else if (el.id === 'payAmount') {
+    readPayForm(); renderSheet();
+  } else if (el.dataset.pick !== undefined) {
+    const d = readPayForm(), id = el.dataset.pick, inv = S.invoices.find(x => x.id === id);
+    if (el.checked && inv) {
+      const amt = numOrNull(d.amount) || 0, others = Object.entries(d.alloc).filter(([k]) => k !== id).reduce((s, [, v]) => s + (numOrNull(v) || 0), 0);
+      const room = r2(amt - others), use = r2(Math.min(invBalance(inv, S.sheet.id), room));
+      if (!amt) toast('Type the amount received first.');
+      else if (use <= 0) toast('The whole payment is already used. Lower another amount first.');
+      if (use > 0) d.alloc[id] = String(use); else delete d.alloc[id];
+    } else delete d.alloc[id];
+    renderSheet();
   } else if (el.dataset.alloc !== undefined) {
     readPayForm(); renderSheet();
   } else if (el.id === 'rackDay') {
