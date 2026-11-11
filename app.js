@@ -168,8 +168,8 @@ const ORDER_PILL = { new: 's-working', delivered: 's-done', cancelled: 's-todo' 
 const gal = v => { const n = Number(String(v == null ? '' : v).replace(/[,\s]/g, '')); return isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : 0; };
 const galText = n => Number(n || 0).toLocaleString('en-US', { maximumFractionDigits: 2 });
 const orderTotal = o => GRADES.reduce((s, [k]) => s + Number(o[k] || 0), 0);
-const orderDraft = o => { const d = { store_id: (o && o.store_id) || '', store_name: (o && o.store_name) || '', day: (o && o.day) || today(), notes: (o && o.notes) || '' }; GRADES.forEach(([k]) => { d[k] = o && Number(o[k]) ? String(Number(o[k])) : ''; }); return d; };
-const orderFacts = o => ['Delivery date: ' + niceDate(o.day)].concat(GRADES.filter(([k]) => Number(o[k]) > 0).map(([k, l]) => l + ': ' + galText(o[k]) + ' gal'), ['Total: ' + galText(orderTotal(o)) + ' gal'], o.notes ? ['Notes: ' + o.notes] : []).join('\n');
+const orderDraft = o => { const d = { store_id: (o && o.store_id) || '', store_name: (o && o.store_name) || '', day: (o && o.day) || '', notes: (o && o.notes) || '' }; GRADES.forEach(([k]) => { d[k] = o && Number(o[k]) ? String(Number(o[k])) : ''; }); return d; };
+const orderFacts = o => ['Ordered: ' + niceDate((o.created_at || nowIso()).slice(0, 10)), 'Deliver by: ' + niceDate(o.day)].concat(GRADES.filter(([k]) => Number(o[k]) > 0).map(([k, l]) => l + ': ' + galText(o[k]) + ' gal'), ['Total: ' + galText(orderTotal(o)) + ' gal'], o.notes ? ['Notes: ' + o.notes] : []).join('\n');
 
 /* ---- pricing deal (partners only; kept in its own locked table, store_pricing, whose id is the store's id) ---- */
 const TERMS = ['Net 7', 'Net 15', 'Net 30', 'Weekly settlement', 'Due on delivery'];
@@ -321,7 +321,7 @@ function orderCardBlob(o) {
   const cv = document.createElement('canvas'); let g = cv.getContext('2d');
   g.font = 'bold 66px ' + F; const titleLines = wrapLines(g, o.store_name || 'Store', W - 2 * P, 3);
   g.font = '40px ' + F; const noteLines = o.notes ? wrapLines(g, o.notes, W - 2 * P - 56, 4) : [];
-  const H = 180 + 70 + titleLines.length * 82 + 30 + (2 + grades.length + 1 + 1) * 100 + (noteLines.length ? 50 + noteLines.length * 54 + 50 : 0) + 120;
+  const H = 180 + 70 + titleLines.length * 82 + 30 + (grades.length + 5) * 100 + (noteLines.length ? 50 + noteLines.length * 54 + 50 : 0) + 120;
   cv.width = W; cv.height = H; g = cv.getContext('2d'); g.textBaseline = 'middle';
   const box = (x, y, w, h, r, color) => { g.fillStyle = color; g.beginPath(); if (g.roundRect) g.roundRect(x, y, w, h, r); else g.rect(x, y, w, h); g.fill(); };
   g.fillStyle = '#ffffff'; g.fillRect(0, 0, W, H);
@@ -338,7 +338,8 @@ function orderCardBlob(o) {
     else { g.fillStyle = opt && opt.big ? '#0b3d2e' : '#14202e'; g.font = 'bold ' + (opt && opt.big ? 54 : 46) + 'px ' + F; g.fillText(value, P + 330, y + 50); }
     g.fillStyle = '#e3e8ee'; g.fillRect(P, y + 99, W - 2 * P, 2); y += 100;
   };
-  row('DELIVERY', niceDate(o.day));
+  row('ORDERED', niceDate((o.created_at || nowIso()).slice(0, 10)));
+  row('DELIVER BY', niceDate(o.day), { big: 1 });
   grades.forEach(([k, l]) => row(l.toUpperCase(), galText(o[k]) + ' gal'));
   row('TOTAL', galText(orderTotal(o)) + ' gal', { big: 1 });
   row('STATUS', ORDER_STATUS[o.status] || o.status || 'New', { pill: STC[o.status] || '#1d5fd1' });
@@ -548,7 +549,7 @@ function staffView() {
 function orderCard(o) {
   const parts = GRADES.filter(([k]) => Number(o[k]) > 0).map(([k, l]) => `<span class="tag">${l}: ${galText(o[k])}</span>`).join('');
   return `<div class="card order-card os-${o.status}" data-act="open-order" data-id="${o.id}">
-    <div class="card-top"><span class="pill ${ORDER_PILL[o.status] || ''}">${ORDER_STATUS[o.status] || esc(o.status)}</span><span class="pill">📅 ${esc(niceDate(o.day))}</span></div>
+    <div class="card-top"><span class="pill ${ORDER_PILL[o.status] || ''}">${ORDER_STATUS[o.status] || esc(o.status)}</span><span class="pill">🚚 Deliver by ${esc(niceDate(o.day))}</span><span class="pill">📝 Ordered ${esc(niceDate((o.created_at || nowIso()).slice(0, 10)))}</span></div>
     <div class="card-title">${esc(o.store_name)}</div>
     <div class="tags" style="--h:150">${parts}</div>
     <div class="card-meta"><span>⛽ ${galText(orderTotal(o))} gal total</span><span>✍️ ${esc(nameOf(o.created_by))}</span></div>
@@ -574,7 +575,8 @@ function orderSheet(sh) {
     ${!stores.length ? '<div class="banner">There are no stores yet. A partner needs to add a store first.</div>' : ''}
     ${o ? `<p class="row"><span class="pill ${ORDER_PILL[o.status] || ''}">${ORDER_STATUS[o.status]}</span><span class="muted">Entered by ${esc(nameOf(o.created_by))} · ${esc(niceTime(o.created_at))}</span></p><p>${waButton('order', o.id)}</p>` : ''}
     <label class="f">Store</label><select class="in" name="store_id" required${dis}><option value="">Pick a store…</option>${stores.map(s => `<option value="${s.id}"${d.store_id === s.id ? ' selected' : ''}>${esc(s.name)}${s.address ? ' — ' + esc(s.address) : ''}</option>`).join('')}</select>
-    <label class="f">Delivery date</label><input class="in" type="date" name="day" value="${esc(d.day)}" required${dis}>
+    <label class="f">Order date</label><div class="in" style="background:transparent">${esc(niceDate(o ? (o.created_at || '').slice(0, 10) || today() : today()))}${o ? '' : ' (today)'}</div>
+    <label class="f">Delivery date — when does the customer need it?</label><input class="in" type="date" name="day" value="${esc(d.day)}" required${dis}>
     <div class="group"><div class="group-t">⛽ Gallons</div>
       ${GRADES.map(([k, l]) => `<label class="f">${l}</label><input class="in" name="${k}" data-gal inputmode="decimal" placeholder="0" value="${esc(d[k])}"${dis}>`).join('')}
       <div class="total-line">Total: <b id="orderTotal">${galText(total)}</b> gallons</div></div>
