@@ -48,6 +48,7 @@ function demoDb() {
   if (!d) d = seed();
   d.store_files = d.store_files || []; d.activity = d.activity || []; d.store_pricing = d.store_pricing || []; d.staff = d.staff || []; d.fuel_orders = d.fuel_orders || []; d.deliveries = d.deliveries || [];
   d.payments = d.payments || []; d.payment_allocations = d.payment_allocations || [];
+  d.supplier_bills = d.supplier_bills || []; d.card_settlements = d.card_settlements || []; d.expenses = d.expenses || [];
   d.invoices = d.invoices || []; d.office_info = d.office_info || []; d.rack_prices = d.rack_prices || [];
   if (!d.tax_rates) d.tax_rates = DEFAULT_TAXES.map((t, i) => ({ id: uid(), name: t[0], rate: t[1], grades: ['regular', 'premium'], sort: i + 1, active: true }));
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(d)); } catch (e) { /* ignore */ } };
@@ -71,6 +72,7 @@ function demoDb() {
       }
       save();
     },
+    async removeBlob() {},
     async upsert(t, row) { const r = d[t].find(x => x.id === row.id); if (r) Object.assign(r, row); else d[t].push({ ...row }); save(); },
     async uploadBlob(row, file) {
       if (file.size > 400000) throw new Error('Practice mode can only keep small photos (under 400 KB). Real mode has no such limit.');
@@ -95,7 +97,7 @@ function demoDb() {
     async fileUrl(row) { const f = row.data ? row : d.files.concat(d.store_files).find(x => x.id === row.id); const blob = await (await fetch(f.data)).blob(); return URL.createObjectURL(blob); },
     async removeFile(row, table = 'files') { await this.remove(table, row.id); },
     async fn() { return {}; },
-    reset() { try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ } d = seed(); d.store_files = []; d.activity = []; d.store_pricing = []; d.staff = []; d.fuel_orders = []; d.deliveries = []; d.invoices = []; d.office_info = []; d.rack_prices = []; d.payments = []; d.payment_allocations = []; d.tax_rates = undefined; }
+    reset() { try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ } d = seed(); d.store_files = []; d.activity = []; d.store_pricing = []; d.staff = []; d.fuel_orders = []; d.deliveries = []; d.invoices = []; d.office_info = []; d.rack_prices = []; d.payments = []; d.payment_allocations = []; d.supplier_bills = []; d.card_settlements = []; d.expenses = []; d.tax_rates = undefined; }
   };
 }
 
@@ -118,7 +120,7 @@ function supaDb() {
     async signOut() { await sb.auth.signOut(); },
     async setPassword(pw) { ok(await sb.auth.updateUser({ password: pw })); },
     async loadAll() {
-      const names = ['members', 'tasks', 'events', 'files', 'stores', 'store_files', 'activity', 'store_pricing', 'staff', 'fuel_orders', 'deliveries', 'invoices', 'office_info', 'tax_rates', 'rack_prices', 'payments', 'payment_allocations'];
+      const names = ['members', 'tasks', 'events', 'files', 'stores', 'store_files', 'activity', 'store_pricing', 'staff', 'fuel_orders', 'deliveries', 'invoices', 'office_info', 'tax_rates', 'rack_prices', 'payments', 'payment_allocations', 'supplier_bills', 'card_settlements', 'expenses'];
       const [sl, tn] = await Promise.all([sb.rpc('store_list'), sb.rpc('team_names')]);
       const rs = await Promise.all(names.map(n => n === 'activity' ? sb.from(n).select('*').order('created_at', { ascending: false }).limit(100) : sb.from(n).select('*')));
       const out = {}; rs.forEach((r, i) => { out[names[i]] = ok(r); });
@@ -129,6 +131,7 @@ function supaDb() {
     async remove(t, id) { ok(await sb.from(t).delete().eq('id', id)); },
     async uploadFile(row, file, table = 'files') { ok(await sb.storage.from('files').upload(row.path, file)); await this.insert(table, row); },
     async upsert(t, row) { ok(await sb.from(t).upsert(row)); },
+    async removeBlob(path) { await sb.storage.from('files').remove([path]); },
     async uploadBlob(row, file) { ok(await sb.storage.from('files').upload(row.photo_path, file)); },
     async fileUrl(row) { return ok(await sb.storage.from('files').createSignedUrl(row.path, 3600)).signedUrl; },
     async removeFile(row, table = 'files') { await sb.storage.from('files').remove([row.path]); await this.remove(table, row.id); },
@@ -212,7 +215,7 @@ const ACT_ICON = { payment: '💵', delivery: '🚚', order: '⛽', store: '🏪
 const isImage = n => /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(n || '');
 const HUES = [210, 150, 28, 280, 345, 175, 50, 240];
 const thumbUrls = new Map();
-const S = { payments: [], allocs: [], orders: [], deliveries: [], invoices: [], office: null, taxes: [], racks: [], storeList: [], team: [], staff: [], role: null, menuOpen: false, store_pricing: [], store_files: [], activity: [], me: null, members: [], tasks: [], events: [], files: [], stores: [], tab: 'tasks', filter: 'all', sheet: null, search: '', draftComment: '' };
+const S = { bills: [], cards: [], expenses: [], payments: [], allocs: [], orders: [], deliveries: [], invoices: [], office: null, taxes: [], racks: [], storeList: [], team: [], staff: [], role: null, menuOpen: false, store_pricing: [], store_files: [], activity: [], me: null, members: [], tasks: [], events: [], files: [], stores: [], tab: 'tasks', filter: 'all', sheet: null, search: '', draftComment: '' };
 const nameOf = email => { const m = S.members.find(x => x.email === email) || S.staff.find(x => x.email === email) || S.team.find(x => x.email === email); return m ? m.name : (email || ''); };
 // Who is this? A partner sees everything. Staff see only orders and BOLs. Anyone else is not let in.
 const roleOf = email => S.members.some(m => m.email === email) ? 'partner' : S.staff.some(s => s.email === email && s.active) ? 'staff' : null;
@@ -242,7 +245,8 @@ async function refresh() {
     S.orders = d.fuel_orders || []; S.deliveries = d.deliveries || [];
     S.invoices = d.invoices || []; S.office = (d.office_info || []).find(x => x.id === 'main') || null;
     S.taxes = (d.tax_rates || []).slice().sort((a, b) => (a.sort || 0) - (b.sort || 0)); S.racks = d.rack_prices || [];
-    S.payments = d.payments || []; S.allocs = d.payment_allocations || []; S.storeList = d.store_list || []; S.team = d.team_names || [];
+    S.payments = d.payments || []; S.allocs = d.payment_allocations || [];
+    S.bills = d.supplier_bills || []; S.cards = d.card_settlements || []; S.expenses = d.expenses || []; S.storeList = d.store_list || []; S.team = d.team_names || [];
     if (S.role && !roleOf(S.me)) { await db.signOut(); S.me = null; S.role = null; closeSheet(); renderLogin('You have been signed out.'); return; }
     S.activity = (d.activity || []).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
   } catch (e) { console.error(e); toast('Could not load. Check your internet.'); return; }
@@ -470,7 +474,7 @@ function storeCards() {
 }
 
 /* The menu. 'partner' pages are hidden from staff here AND locked in storage. */
-const MENU = [['tasks', '✅', 'Tasks', 'partner'], ['stores', '🏪', 'Stores', 'partner'], ['orders', '⛽', 'Fuel orders', 'all'], ['bols', '🚚', 'Deliveries / BOL', 'all'], ['invoices', '🧾', 'Invoices', 'partner'], ['payments', '💵', 'Payments', 'partner'], ['company', '🏢', 'Company & taxes', 'partner'], ['staff', '👥', 'Staff', 'partner']];
+const MENU = [['tasks', '✅', 'Tasks', 'partner'], ['stores', '🏪', 'Stores', 'partner'], ['orders', '⛽', 'Fuel orders', 'all'], ['bols', '🚚', 'Deliveries / BOL', 'all'], ['invoices', '🧾', 'Invoices', 'partner'], ['payments', '💵', 'Payments', 'partner'], ['bills', '🏭', 'Supplier bills', 'partner'], ['cards', '💳', 'Card settlements', 'partner'], ['expenses', '📒', 'Expenses', 'partner'], ['reports', '📊', 'Reports', 'partner'], ['company', '🏢', 'Company & taxes', 'partner'], ['staff', '👥', 'Staff', 'partner']];
 const menuFor = () => MENU.filter(m => m[3] === 'all' || S.role === 'partner');
 
 function staffView() {
@@ -859,6 +863,158 @@ function readPayForm() {
   f.querySelectorAll('[data-alloc]').forEach(el => { if (el.value.trim()) d.alloc[el.dataset.alloc] = el.value.trim(); else delete d.alloc[el.dataset.alloc]; });
   return d;
 }
+/* ---- step 7: supplier bills, card settlements, expenses (partners only) ---- */
+const EXP_CATS = ['Freight / hauling', 'Truck & fuel', 'Insurance', 'Rent & utilities', 'Payroll', 'Taxes paid', 'Bank & card fees', 'Office & software', 'Licenses & permits', 'Other'];
+const LEDGERS = {
+  bills: { table: 'supplier_bills', list: () => S.bills, one: 'bill', title: 'Supplier bill', fileLabel: 'Copy of the bill (PDF or photo)', need: 'total',
+    fields: [['supplier', 'Supplier', 'text', 'World Fuel'], ['number', 'Bill / invoice number', 'text'], ['day', 'Bill date', 'date'], ['due_date', 'Due date', 'date'], ['bol_number', 'BOL number (to match the delivery)', 'text'],
+      ['regular', 'Regular gallons', 'num'], ['premium', 'Premium gallons', 'num'], ['diesel', 'Diesel gallons', 'num'], ['kerosene', 'Kerosene gallons', 'num'],
+      ['fuel_cost', 'Fuel cost ($)', 'money'], ['freight', 'Freight ($)', 'money'], ['taxes', 'Taxes and fees ($)', 'money'], ['total', 'Bill total ($) — left empty, it adds the 3 lines above', 'money'],
+      ['status', 'Status', 'select', ['Unpaid', 'Paid']], ['paid_on', 'Paid on', 'date'], ['notes', 'Notes', 'area']] },
+  cards: { table: 'card_settlements', list: () => S.cards, one: 'settlement', title: 'Card settlement', fileLabel: 'Settlement report (PDF or photo)', need: 'gross',
+    fields: [['day', 'Settlement date', 'date'], ['processor', 'Card network / processor', 'text', 'Marathon'], ['store_id', 'Store (optional)', 'store'], ['gross', 'Gross card sales ($)', 'money'], ['fees', 'Fees ($)', 'money'], ['net', 'Net deposited ($) — left empty, it is gross minus fees', 'money'], ['reference', 'Reference / batch number', 'text'], ['notes', 'Notes', 'area']] },
+  expenses: { table: 'expenses', list: () => S.expenses, one: 'expense', title: 'Expense', fileLabel: 'Receipt (PDF or photo)', need: 'amount',
+    fields: [['day', 'Date', 'date'], ['category', 'Category', 'select', EXP_CATS], ['vendor', 'Paid to', 'text'], ['amount', 'Amount ($)', 'money'], ['method', 'How paid', 'select', PAY_METHODS], ['notes', 'Notes', 'area']] }
+};
+const thisMonth = () => today().slice(0, 7);
+const inMonth = (day, m) => (day || '').slice(0, 7) === m;
+const monthName = m => { const [y, mo] = m.split('-'); return new Date(+y, +mo - 1, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' }); };
+const billLate = b => b.status !== 'Paid' && b.due_date && b.due_date < today();
+function ledLine(k, r) {
+  if (k === 'bills') return { title: (r.supplier || 'Supplier') + (r.number ? ' #' + r.number : ''), amt: r.total, pill: r.status === 'Paid' ? '<span class="pill s-done">Paid</span>' : `<span class="pill${billLate(r) ? ' need-pill' : ''}">Unpaid${billLate(r) ? ' · overdue' : ''}</span>`, meta: [r.bol_number ? 'BOL #' + r.bol_number : '', r.due_date ? 'Due ' + niceDate(r.due_date) : '', galText(orderTotal(r)) + ' gal'] };
+  if (k === 'cards') return { title: (r.processor || 'Card settlement') + (r.store_name ? ' · ' + r.store_name : ''), amt: r.net, pill: '', meta: ['Gross ' + money(r.gross), 'Fees ' + money(r.fees || 0), r.reference ? '#' + r.reference : ''] };
+  return { title: (r.category || 'Expense') + (r.vendor ? ' · ' + r.vendor : ''), amt: r.amount, pill: '', meta: [r.method || ''] };
+}
+function ledgerView(k) {
+  const L = LEDGERS[k], m = S.ledMonth || thisMonth(), all = L.list(), rows = all.filter(r => inMonth(r.day, m)).sort((a, b) => (b.day || '').localeCompare(a.day || ''));
+  const sum = f => r2(rows.reduce((s, r) => s + Number(r[f] || 0), 0));
+  let top = '';
+  if (k === 'bills') { const un = all.filter(b => b.status !== 'Paid'), late = un.filter(billLate); top = `We owe suppliers: <b>${money(r2(un.reduce((s, b) => s + Number(b.total || 0), 0)))}</b>${late.length ? ` · <b style="color:var(--red)">${money(r2(late.reduce((s, b) => s + Number(b.total || 0), 0)))} overdue</b>` : ''}<br>Bills this month: <b>${money(sum('total'))}</b>`; }
+  else if (k === 'cards') top = `This month: gross <b>${money(sum('gross'))}</b> · fees <b>${money(sum('fees'))}</b> · net <b>${money(sum('net'))}</b>`;
+  else { const cats = {}; rows.forEach(r => { cats[r.category || 'Other'] = r2((cats[r.category || 'Other'] || 0) + Number(r.amount || 0)); }); top = `This month: <b>${money(sum('amount'))}</b>${Object.keys(cats).length ? '<br><small>' + Object.entries(cats).map(([c, v]) => esc(c) + ' ' + money(v)).join(' · ') + '</small>' : ''}`; }
+  return `<label class="f">Month</label><input class="in" type="month" id="ledMonth" value="${esc(m)}">
+    <div class="group money"><div class="total-line" style="margin:0;border:0;padding:0">${top}</div></div>
+    ${rows.length ? rows.map(r => { const x = ledLine(k, r); return `<div class="card order-card" data-act="open-led" data-id="${r.id}">
+      <div class="card-top"><span class="pill">📅 ${esc(niceDate(r.day))}</span>${x.pill}${r.photo_path ? '<span class="pill">📎</span>' : ''}</div>
+      <div class="card-title">${esc(x.title)} <span style="float:right">${money(x.amt)}</span></div>
+      <div class="card-meta">${x.meta.filter(Boolean).map(s => `<span>${esc(s)}</span>`).join('')}</div></div>`; }).join('') : `<p class="empty">Nothing for ${esc(monthName(m))}. Tap “+ New ${L.one}”.</p>`}`;
+}
+function ledDraft(k, r) {
+  const d = { k, file: null, fileName: '' };
+  LEDGERS[k].fields.forEach(([n, , t, def]) => { const v = r ? r[n] : (t === 'date' && n === 'day' ? today() : (typeof def === 'string' ? def : '')); d[n] = v == null ? '' : (t === 'num' || t === 'money') && v !== '' ? String(Number(v)) : String(v); });
+  if (!r && k === 'expenses') d.method = 'Check';
+  return d;
+}
+function ledgerSheet(sh) {
+  const L = LEDGERS[sh.k], d = sh.draft, r = sh.id ? L.list().find(x => x.id === sh.id) : null; if (sh.id && !r) return '';
+  const stores = S.stores.slice().sort((a, b) => a.name.localeCompare(b.name));
+  const field = ([n, label, t, opt]) => {
+    const v = esc(d[n] || '');
+    if (t === 'date') return `<label class="f">${label}</label><input class="in" type="date" name="${n}" value="${v}">`;
+    if (t === 'area') return `<label class="f">${label}</label><textarea class="in" name="${n}">${v}</textarea>`;
+    if (t === 'select') return `<label class="f">${label}</label><select class="in" name="${n}">${opt.map(o => `<option${d[n] === o ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
+    if (t === 'store') return `<label class="f">${label}</label><select class="in" name="${n}"><option value="">— none —</option>${stores.map(s => `<option value="${s.id}"${d[n] === s.id ? ' selected' : ''}>${esc(s.name)}</option>`).join('')}</select>`;
+    return `<label class="f">${label}</label><input class="in" name="${n}" value="${v}"${t === 'num' || t === 'money' ? ' inputmode="decimal"' : ''}>`;
+  };
+  return `<div class="sheet-head"><button data-act="close">${sh.id ? '← Back' : '✕ Cancel'}</button><span>${sh.id ? L.title : 'New ' + L.one}</span><span></span></div>
+  <form class="sheet-body" id="ledForm">
+    ${r ? `<p class="muted">Entered by ${esc(nameOf(r.created_by))} · ${esc(niceTime(r.created_at))}</p>` : ''}
+    ${L.fields.map(field).join('')}
+    <label class="f">${L.fileLabel}</label>
+    ${r && r.photo_path ? '<p><button type="button" class="btn" data-act="led-file">📎 See the copy</button></p>' : ''}
+    <p><label class="btn">${d.file ? '📎 ' + esc(d.fileName) + ' (tap to change)' : (r && r.photo_path ? '📎 Replace the copy' : '📎 Add a copy (optional)')}<input type="file" id="ledFile" accept="image/*,application/pdf" hidden></label></p>
+    <p></p><button class="btn go wide" type="submit">${sh.id ? 'Save changes' : 'Save ' + L.one}</button>
+    ${r ? `<p style="margin-top:32px"><button type="button" class="btn danger" data-act="led-del">Delete this ${L.one}</button></p>` : ''}
+  </form>`;
+}
+function readLedForm() {
+  const f = $('#ledForm'), d = S.sheet && S.sheet.draft; if (!f || !d) return d;
+  LEDGERS[d.k].fields.forEach(([n]) => { if (f.elements[n]) d[n] = f.elements[n].value; });
+  return d;
+}
+async function saveLedger(f) {
+  const d = readLedForm(), sh = S.sheet, L = LEDGERS[d.k], isNew = !sh.id, old = isNew ? null : L.list().find(x => x.id === sh.id);
+  const row = {};
+  L.fields.forEach(([n, , t]) => { const v = (d[n] || '').trim(); row[n] = t === 'num' || t === 'money' ? numOrNull(v) : (v || null); });
+  ['regular', 'premium', 'diesel', 'kerosene'].forEach(k => { if (k in row && row[k] == null) row[k] = 0; });
+  if (d.k === 'bills' && row.total == null) { const s = (row.fuel_cost || 0) + (row.freight || 0) + (row.taxes || 0); row.total = s ? r2(s) : null; }
+  if (d.k === 'bills' && row.status === 'Paid' && !row.paid_on) row.paid_on = today();
+  if (d.k === 'cards') { if (row.fees == null) row.fees = 0; if (row.net == null && row.gross != null) row.net = r2(row.gross - row.fees); const st = S.stores.find(s => s.id === row.store_id); row.store_name = st ? st.name : null; }
+  if (!row.day) { toast('Pick the date.'); return; }
+  if (!(row[L.need] > 0)) { toast(d.k === 'bills' ? 'Type the bill total (or its cost lines).' : 'Type the amount.'); return; }
+  const id = sh.id || uid(), stamp = nowIso();
+  const btn = f.querySelector('button[type=submit]'); if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+  const okay = await safe(async () => {
+    if (d.file) {
+      const ext = (d.file.name.match(/\.\w+$/) || ['.jpg'])[0].toLowerCase();
+      row.photo_path = 'office/' + L.table + '/' + id + '-' + Date.now() + ext; row.photo_name = d.file.name;
+      await db.uploadBlob(row, d.file);
+    }
+    if (isNew) await db.insert(L.table, { id, ...row, created_by: S.me, created_at: stamp, updated_by: S.me, updated_at: stamp });
+    else await db.update(L.table, id, { ...row, updated_by: S.me, updated_at: stamp });
+    return true;
+  }, 'It was NOT saved. Check your internet and try again.');
+  if (!okay) { if (btn) { btn.disabled = false; btn.textContent = 'Try again'; } return; }
+  if (old && d.file && old.photo_path) { try { await db.removeBlob(old.photo_path); } catch (e) { /* ignore */ } }
+  closeSheet(); toast('Saved.'); S.ledMonth = row.day.slice(0, 7); refresh();
+}
+/* ---- reports ---- */
+function reportData(m) {
+  const inv = S.invoices.filter(i => i.status === 'ready' && inMonth(i.day, m));
+  const lines = inv.flatMap(i => (i.lines || []).map(l => ({ ...l, inv: i })));
+  const sumL = t => r2(lines.filter(l => l.type === t).reduce((s, l) => s + Number(l.amount || 0), 0));
+  const gals = {}; GRADES.forEach(([k]) => { gals[k] = r2(lines.filter(l => l.type === 'fuel' && l.grade === k).reduce((s, l) => s + Number(l.gallons || 0), 0)); });
+  const sales = r2(inv.reduce((s, i) => s + Number(i.total || 0), 0));
+  const bills = S.bills.filter(b => inMonth(b.day, m)), cost = r2(bills.reduce((s, b) => s + Number(b.total || 0), 0));
+  const cards = S.cards.filter(c => inMonth(c.day, m)), exp = S.expenses.filter(e => inMonth(e.day, m));
+  const cardFees = r2(cards.reduce((s, c) => s + Number(c.fees || 0), 0)), expTotal = r2(exp.reduce((s, e) => s + Number(e.amount || 0), 0));
+  const cats = {}; exp.forEach(e => { cats[e.category || 'Other'] = r2((cats[e.category || 'Other'] || 0) + Number(e.amount || 0)); });
+  const collected = r2(S.payments.filter(p => inMonth(p.day, m)).reduce((s, p) => s + Number(p.amount || 0), 0));
+  const owed = r2(S.invoices.filter(i => i.status === 'ready').reduce((s, i) => s + Math.max(0, invBalance(i)), 0));
+  const weOwe = r2(S.bills.filter(b => b.status !== 'Paid').reduce((s, b) => s + Number(b.total || 0), 0));
+  const stores = {}; inv.forEach(i => { const s = stores[i.store_name] = stores[i.store_name] || { gal: 0, sales: 0 }; s.sales = r2(s.sales + Number(i.total || 0)); s.gal = r2(s.gal + (i.lines || []).filter(l => l.type === 'fuel').reduce((a, l) => a + Number(l.gallons || 0), 0)); });
+  const loads = inv.map(i => { const dl = S.deliveries.find(x => x.id === i.delivery_id), bol = dl ? dl.bol_number : '', b = bol && S.bills.find(x => (x.bol_number || '').trim() === String(bol).trim());
+    const g = (i.lines || []).filter(l => l.type === 'fuel').reduce((a, l) => a + Number(l.gallons || 0), 0);
+    return { store: i.store_name, bol, day: i.day, gal: g, sold: Number(i.total || 0), cost: b ? Number(b.total || 0) : null }; });
+  return { inv, sales, fuel: sumL('fuel'), freight: sumL('freight'), taxes: sumL('tax'), gals, totalGal: r2(Object.values(gals).reduce((a, b) => a + b, 0)), cost, cardGross: r2(cards.reduce((s, c) => s + Number(c.gross || 0), 0)), cardFees, cardNet: r2(cards.reduce((s, c) => s + Number(c.net || 0), 0)), expTotal, cats, collected, owed, weOwe, stores, loads, margin: r2(sales - cost), profit: r2(sales - cost - expTotal - cardFees) };
+}
+function reportHtml(m) {
+  const R = reportData(m), row = (a, b, strong) => `<tr><td>${a}</td><td class="num">${strong ? '<b>' + b + '</b>' : b}</td></tr>`;
+  return `<div class="rep"><h2 class="sec">${esc(monthName(m))}</h2>
+    <table class="inv-t">
+      <tr class="inv-h"><td colspan="2">Sales (Ready invoices)</td></tr>
+      ${row('Invoices', R.inv.length)}${row('Gallons sold', galText(R.totalGal))}${GRADES.filter(([k]) => R.gals[k] > 0).map(([k, l]) => row('&nbsp;&nbsp;' + l, galText(R.gals[k]))).join('')}
+      ${row('Fuel', money(R.fuel))}${row('Freight billed', money(R.freight))}${row('Taxes and fees billed', money(R.taxes))}${row('Total invoiced', money(R.sales), 1)}
+      <tr class="inv-h"><td colspan="2">Costs</td></tr>
+      ${row('Supplier bills', money(R.cost))}${row('Card fees', money(R.cardFees))}${row('Expenses', money(R.expTotal))}
+      ${Object.entries(R.cats).map(([c, v]) => row('&nbsp;&nbsp;' + esc(c), money(v))).join('')}
+      <tr class="inv-h"><td colspan="2">Result</td></tr>
+      ${row('Invoiced minus supplier bills', money(R.margin), 1)}${row('Per gallon', R.totalGal ? '$' + (R.margin / R.totalGal).toFixed(4) : '—')}
+      <tr class="inv-total"><td>Estimated profit</td><td class="num">${money(R.profit)}</td></tr>
+      <tr class="inv-h"><td colspan="2">Money in and out</td></tr>
+      ${row('Payments received this month', money(R.collected))}${row('Card settlements (net)', money(R.cardNet))}${row('Stores owe us now', money(R.owed), 1)}${row('We owe suppliers now', money(R.weOwe), 1)}
+    </table>
+    ${Object.keys(R.stores).length ? `<h3 class="sec">By store</h3><table class="inv-t"><tr><th>Store</th><th class="num">Gallons</th><th class="num">Invoiced</th></tr>${Object.entries(R.stores).map(([n, s]) => `<tr><td>${esc(n)}</td><td class="num">${galText(s.gal)}</td><td class="num">${money(s.sales)}</td></tr>`).join('')}</table>` : ''}
+    ${R.loads.length ? `<h3 class="sec">Each load: sold vs. supplier bill</h3><table class="inv-t"><tr><th>Load</th><th class="num">Sold</th><th class="num">Cost</th><th class="num">Margin</th></tr>${R.loads.map(l => `<tr><td>${esc(l.store)}<br><small>BOL #${esc(l.bol)} · ${esc(niceDate(l.day))} · ${galText(l.gal)} gal</small></td><td class="num">${money(l.sold)}</td><td class="num">${l.cost == null ? '<small>no bill yet</small>' : money(l.cost)}</td><td class="num">${l.cost == null ? '—' : '<b>' + money(r2(l.sold - l.cost)) + '</b>' + (l.gal ? '<br><small>$' + ((l.sold - l.cost) / l.gal).toFixed(4) + '/gal</small>' : '')}</td></tr>`).join('')}</table>
+      <p class="muted">A load is matched to a supplier bill by its BOL number.</p>` : ''}
+    <p class="muted">Profit is an estimate: invoiced minus supplier bills, card fees and expenses for the month. Taxes are on both sides, so they cancel out.</p></div>`;
+}
+function reportView() {
+  const m = S.repMonth || thisMonth();
+  return `<label class="f">Month</label><input class="in" type="month" id="repMonth" value="${esc(m)}">
+    <p class="row"><button class="btn go" data-act="rep-pdf">📤 Save report as PDF</button><button class="btn" data-act="backup">💾 Download a backup</button></p>
+    <div id="repBody">${reportHtml(m)}</div>`;
+}
+function offerFile(title, preview, make) {
+  closeViewer();
+  const v = document.createElement('div'); v.id = 'viewer';
+  v.innerHTML = `<div class="sheet-head"><button type="button" data-act="viewer-close">← Back</button><span class="vname">${esc(title)}</span><span></span></div>
+    <div class="viewer-body"><p class="row vbtns"><button type="button" class="btn go" data-act="pdf-share" disabled>Getting it ready…</button></p><div class="pi-paper">${preview}</div></div>`;
+  document.body.appendChild(v);
+  const cur = viewing = { id: title, file: null, failed: false };
+  make(v).then(file => { if (viewing !== cur) return; cur.file = file; const b = $('[data-act=pdf-share]', v); if (b) { b.disabled = false; b.textContent = '📤 Save or share'; } })
+    .catch(e => { console.warn(e); const b = $('[data-act=pdf-share]', v); if (b) b.textContent = 'Could not make it. Try again.'; });
+}
 const comingSoon = (icon, what) =>`<p class="empty" style="margin-top:40px"><span style="font-size:44px">${icon}</span><br>${what} will live here.<br>This page is being built next.</p>`;
 
 function renderMain() {
@@ -875,9 +1031,11 @@ function renderMain() {
     : S.tab === 'bols' ? dlvView()
     : S.tab === 'invoices' ? invView()
     : S.tab === 'payments' ? payView()
+    : LEDGERS[S.tab] ? ledgerView(S.tab)
+    : S.tab === 'reports' ? reportView()
     : S.tab === 'company' ? companyView()
     : staffView();
-  const fab = S.tab === 'tasks' ? ['new-task', 'task'] : S.tab === 'stores' ? ['new-store', 'store'] : S.tab === 'orders' ? ['new-order', 'order'] : S.tab === 'bols' ? ['new-dlv', 'delivery'] : S.tab === 'payments' ? ['new-pay', 'payment'] : null;
+  const fab = S.tab === 'tasks' ? ['new-task', 'task'] : S.tab === 'stores' ? ['new-store', 'store'] : S.tab === 'orders' ? ['new-order', 'order'] : S.tab === 'bols' ? ['new-dlv', 'delivery'] : S.tab === 'payments' ? ['new-pay', 'payment'] : LEDGERS[S.tab] ? ['new-led', LEDGERS[S.tab].one] : null;
   document.body.classList.add('has-side');
   $('#app').innerHTML = `
     <nav class="side${S.menuOpen ? ' open' : ''}"><div class="side-t">KE Office</div>
@@ -909,6 +1067,7 @@ function renderSheet() {
   else if (sh.type === 'dlv') el.innerHTML = dlvSheet(sh);
   else if (sh.type === 'inv') el.innerHTML = invSheet(sh);
   else if (sh.type === 'pay') el.innerHTML = paySheet(sh);
+  else if (sh.type === 'led') el.innerHTML = ledgerSheet(sh);
   else if (sh.type === 'settings') el.innerHTML = settingsSheet();
   else if (sh.type === 'activity') el.innerHTML = activitySheet();
 }
@@ -1105,6 +1264,17 @@ const ACT = {
   'tax-del': async el => { const t = S.taxes.find(x => x.id === el.dataset.id); if (!t || !confirm('Remove “' + t.name + '”? Drafts stop adding it. Ready invoices keep it.')) return; await safe(() => db.remove('tax_rates', t.id), 'Could not remove the tax.'); refresh(); },
   'new-pay': () => openSheet({ type: 'pay', id: null, draft: payDraft(null) }),
   'open-pay': el => { const p = S.payments.find(x => x.id === el.dataset.id); if (p) openSheet({ type: 'pay', id: p.id, draft: payDraft(p) }); },
+  'new-led': () => openSheet({ type: 'led', k: S.tab, id: null, draft: ledDraft(S.tab, null) }),
+  'open-led': el => { const r = LEDGERS[S.tab].list().find(x => x.id === el.dataset.id); if (r) openSheet({ type: 'led', k: S.tab, id: r.id, draft: ledDraft(S.tab, r) }); },
+  'led-file': () => { const r = LEDGERS[S.sheet.k].list().find(x => x.id === S.sheet.id); if (r && r.photo_path) openViewer({ id: r.id, name: r.photo_name || 'copy', path: r.photo_path, data: r.photo_data }); },
+  'led-del': async () => {
+    const L = LEDGERS[S.sheet.k], r = L.list().find(x => x.id === S.sheet.id); if (!r || !confirm('Delete this ' + L.one + '? This cannot be undone.')) return;
+    closeSheet();
+    await safe(() => r.photo_path ? db.removeFile({ id: r.id, path: r.photo_path }, L.table) : db.remove(L.table, r.id), 'Could not delete it.'); toast('Deleted.'); refresh();
+  },
+  'rep-pdf': () => { const m = S.repMonth || thisMonth(); offerFile('Report ' + monthName(m), `<div class="pi">${reportHtml(m)}</div>`, v => makePdf($('.pi', v), 'King Energy report ' + m + '.pdf')); },
+  'backup': () => offerFile('Backup', '<div class="pi"><h3>Backup of all King Energy Office data</h3><p>Stores, orders, deliveries, invoices, payments, bills, card settlements, expenses, taxes and staff, in one file. Keep it somewhere safe (Files, Google Drive or email it to yourself). Photos and PDFs are not inside it.</p></div>',
+    async () => { const d = await db.loadAll(); return new File([JSON.stringify(d, null, 1)], 'king-energy-office-backup-' + today() + '.json', { type: 'application/json' }); }),
   'pay-back': () => { S.sheet.confirming = false; renderSheet(); },
   'pay-auto': () => { readPayForm(); autoApply(S.sheet); renderSheet(); },
   'pay-del': async () => {
@@ -1313,6 +1483,8 @@ document.addEventListener('submit', async e => {
       await safe(() => db.update('fuel_orders', old.id, base), 'The changes were NOT saved.');
       toast('Order changed.'); refresh();
     }
+  } else if (f.id === 'ledForm') {
+    await saveLedger(f);
   } else if (f.id === 'payForm') {
     const d = readPayForm(), sh = S.sheet, isNew = !sh.id, amt = numOrNull(d.amount), st = S.stores.find(s => s.id === d.store_id);
     if (!st) { toast('Pick a store first.'); return; }
@@ -1397,6 +1569,12 @@ document.addEventListener('change', async e => {
     }
     if (S.sheet && S.sheet.id === taskId) renderSheet();
     renderMain();
+  } else if (el.id === 'ledMonth') {
+    S.ledMonth = el.value || thisMonth(); renderMain();
+  } else if (el.id === 'repMonth') {
+    S.repMonth = el.value || thisMonth(); renderMain();
+  } else if (el.id === 'ledFile') {
+    const file = el.files[0]; if (!file) return; const d = readLedForm(); d.file = file; d.fileName = file.name; renderSheet();
   } else if (el.id === 'payStore') {
     const d = readPayForm(); d.alloc = {}; renderSheet();
   } else if (el.id === 'payAmount') {
