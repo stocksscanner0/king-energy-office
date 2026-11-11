@@ -1205,6 +1205,14 @@ const appLink = () => location.origin + location.pathname;
 const waButton = text => `<a class="btn wa" href="https://wa.me/?text=${encodeURIComponent(text)}" target="_blank" rel="noopener">💬 Send on WhatsApp</a>`;
 const taskWaText = t => `*King Energy task*\n${t.title}\nOwner: ${t.owner ? nameOf(t.owner) : 'NOBODY YET'}\nDue: ${t.due ? niceDate(t.due) : 'no date'}\nStatus: ${STATUS[t.status]}${isLate(t) ? ' (LATE)' : ''}${t.details ? '\n' + t.details : ''}\n${appLink()}`;
 const orderWaText = o => `*King Energy fuel order*\nStore: ${o.store_name}\n${orderFacts(o)}\nStatus: ${ORDER_STATUS[o.status] || o.status}\nEntered by ${nameOf(o.created_by)}\n${appLink()}`;
+function askShare(title, text) {
+  const old = $('#askShare'); if (old) old.remove();
+  const box = document.createElement('div'); box.id = 'askShare';
+  box.innerHTML = `<div class="ask-card"><div class="ask-t">✅ ${esc(title)}</div><p>Send it on WhatsApp now so nobody misses it?</p>
+    <p>${waButton(text)}</p><p><button type="button" class="btn wide" data-act="ask-close">Not now</button></p></div>`;
+  document.body.appendChild(box);
+  box.querySelector('a.wa').addEventListener('click', () => setTimeout(() => box.remove(), 300));
+}
 function taskSheet(t) {
   if (!t) return '';
   const evs = S.events.filter(e => e.task_id === t.id).sort((a, b) => a.created_at.localeCompare(b.created_at));
@@ -1408,6 +1416,7 @@ const ACT = {
     if (!confirm('Delete the ' + money(p.amount) + ' payment from ' + p.store_name + '? Its invoices go back to unpaid. This cannot be undone.')) return;
     closeSheet(); await safe(() => db.remove('payments', p.id), 'Could not delete the payment.'); toast('Payment deleted.'); refresh();
   },
+  'ask-close': () => { const b = $('#askShare'); if (b) b.remove(); },
   'new-dlv': () => openSheet({ type: 'dlv', id: null, draft: dlvDraft(null) }),
   'open-dlv': el => { const x = S.deliveries.find(r => r.id === el.dataset.id); if (x) openSheet({ type: 'dlv', id: x.id, draft: dlvDraft(x) }); },
   'dlv-photo': () => { const x = S.deliveries.find(r => r.id === S.sheet.id); if (x) openViewer({ id: x.id, name: x.photo_name || ('BOL ' + x.bol_number + '.jpg'), path: x.photo_path, data: x.photo_data }); },
@@ -1557,6 +1566,7 @@ document.addEventListener('submit', async e => {
       await logActivity('task_new', 'New task: ' + t.title, taskFacts(t) + (t.details ? '\nDetails: ' + t.details : ''));
     });
     if (!owner) toast('Saved. Nobody owns it yet.');
+    askShare('Task saved', taskWaText(t));
   } else if (f.id === 'storeForm') {
     const d = readStoreForm();
     const extra = d.extra.filter(x => x.label || x.value).map(x => ({ label: x.label || 'Note', value: x.value }));
@@ -1603,7 +1613,7 @@ document.addEventListener('submit', async e => {
       const row = { id: uid(), ...base, status: 'new', created_by: S.me, created_at: stamp };
       S.orders.push(row); S.tab = 'orders'; renderMain();
       const okay = await safe(async () => { await db.insert('fuel_orders', row); return true; }, 'The order was NOT saved. Check your internet and try again.');
-      if (okay) { toast('Order saved. The partners are being told.'); ping('order_new', { order_id: row.id }); setTimeout(refresh, 2500); } else refresh();
+      if (okay) { toast('Order saved. The partners are being told.'); ping('order_new', { order_id: row.id }); askShare('Order saved', orderWaText(row)); setTimeout(refresh, 2500); } else refresh();
     } else {
       Object.assign(old, base); renderMain();
       await safe(() => db.update('fuel_orders', old.id, base), 'The changes were NOT saved.');

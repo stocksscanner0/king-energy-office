@@ -254,3 +254,8 @@ label.chk { display: inline-flex; align-items: center; gap: 4px; margin: 6px 12p
 .top .menu-btn .mb-i { font-size: 26px; }
 .top .menu-btn .mb-t { font-size: 11px; font-weight: 700; margin-top: 2px; }
 @media (min-width: 900px) { .top .menu-btn { display: none; } }
+/* "Send on WhatsApp?" reminder after saving */
+#askShare { position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; padding: 16px; }
+#askShare .ask-card { background: var(--card, #fff); color: var(--text, #111); border-radius: 14px; padding: 18px; width: 100%; max-width: 380px; text-align: center; box-shadow: 0 8px 30px rgba(0,0,0,.3); }
+#askShare .ask-t { font-size: 20px; font-weight: 800; }
+#askShare .btn.wa { width: 100%; padding: 14px; font-size: 17px; box-sizing: border-box; }
