@@ -1201,7 +1201,7 @@ function renderMain() {
   const fab = S.tab === 'tasks' ? ['new-task', 'task'] : S.tab === 'stores' ? ['new-store', 'store'] : S.tab === 'orders' ? ['new-order', 'order'] : S.tab === 'bols' ? ['new-dlv', 'delivery'] : S.tab === 'payments' ? ['new-pay', 'payment'] : LEDGERS[S.tab] ? ['new-led', LEDGERS[S.tab].one] : null;
   document.body.classList.add('has-side');
   $('#app').innerHTML = `
-    <nav class="side${S.menuOpen ? ' open' : ''}"><div class="side-t">KE Office</div>
+    <nav class="side${S.menuOpen ? ' open' : ''}"><div class="side-t">King Energy Office</div>
       ${menu.map(m => `<button class="${S.tab === m[0] ? 'on' : ''}" data-act="tab" data-v="${m[0]}"><span>${m[1]}</span>${m[2]}</button>`).join('')}
       <div class="side-who">${esc(nameOf(S.me))}<br><small>${partner ? 'Partner' : 'Staff'}</small></div></nav>
     ${S.menuOpen ? '<div class="shade" data-act="menu-close"></div>' : ''}
