@@ -305,13 +305,66 @@ function taskCardBlob(t) {
     g.fillStyle = '#14202e'; g.font = '40px ' + F; let yy = y + 28; for (const line of lastLines) { g.fillText(line, P + 36, yy); yy += 54; }
     y += h + 10;
   }
-  g.fillStyle = '#64748b'; g.font = '30px ' + F; g.fillText('Open the app to update:  ' + location.host + location.pathname.replace(/\/$/, ''), P, H - 56);
-  // Made right away (no waiting), so the phone still treats the share as coming from the tap.
+  g.fillStyle = '#64748b'; g.font = '30px ' + F; g.fillText('King Energy  ·  ' + niceDate(today()), P, H - 56);
+  return canvasBlob(cv);
+}
+// Made right away (no waiting), so the phone still treats the share as coming from the tap.
+function canvasBlob(cv) {
   const bin = atob(cv.toDataURL('image/png').split(',')[1]), arr = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
   return new Blob([arr], { type: 'image/png' });
 }
+function orderCardBlob(o) {
+  const W = 1080, P = 64, F = '"Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", sans-serif';
+  const STC = { new: '#1d5fd1', delivered: '#12805c', cancelled: '#64748b' };
+  const grades = GRADES.filter(([k]) => Number(o[k]) > 0);
+  const cv = document.createElement('canvas'); let g = cv.getContext('2d');
+  g.font = 'bold 66px ' + F; const titleLines = wrapLines(g, o.store_name || 'Store', W - 2 * P, 3);
+  g.font = '40px ' + F; const noteLines = o.notes ? wrapLines(g, o.notes, W - 2 * P - 56, 4) : [];
+  const H = 180 + 70 + titleLines.length * 82 + 30 + (2 + grades.length + 1 + 1) * 100 + (noteLines.length ? 50 + noteLines.length * 54 + 50 : 0) + 120;
+  cv.width = W; cv.height = H; g = cv.getContext('2d'); g.textBaseline = 'middle';
+  const box = (x, y, w, h, r, color) => { g.fillStyle = color; g.beginPath(); if (g.roundRect) g.roundRect(x, y, w, h, r); else g.rect(x, y, w, h); g.fill(); };
+  g.fillStyle = '#ffffff'; g.fillRect(0, 0, W, H);
+  g.fillStyle = '#0b3d2e'; g.fillRect(0, 0, W, 180);
+  box(P, 46, 88, 88, 20, '#f5a623'); g.fillStyle = '#0b3d2e'; g.font = 'bold 44px ' + F; g.textAlign = 'center'; g.fillText('KE', P + 44, 92);
+  g.textAlign = 'left'; g.fillStyle = '#ffffff'; g.font = 'bold 52px ' + F; g.fillText('King Energy', P + 116, 74);
+  g.fillStyle = '#f5a623'; g.font = '32px ' + F; g.fillText('⛽ FUEL ORDER', P + 118, 124);
+  let y = 180 + 70; g.fillStyle = '#14202e'; g.font = 'bold 66px ' + F;
+  for (const line of titleLines) { g.fillText(line, P, y + 30); y += 82; }
+  y += 30;
+  const row = (label, value, opt) => {
+    g.fillStyle = '#64748b'; g.font = 'bold 30px ' + F; g.fillText(label, P, y + 50);
+    if (opt && opt.pill) { g.font = 'bold 40px ' + F; const w = g.measureText(value).width + 56; box(P + 330, y + 14, w, 72, 36, opt.pill); g.fillStyle = '#ffffff'; g.fillText(value, P + 358, y + 52); }
+    else { g.fillStyle = opt && opt.big ? '#0b3d2e' : '#14202e'; g.font = 'bold ' + (opt && opt.big ? 54 : 46) + 'px ' + F; g.fillText(value, P + 330, y + 50); }
+    g.fillStyle = '#e3e8ee'; g.fillRect(P, y + 99, W - 2 * P, 2); y += 100;
+  };
+  row('DELIVERY', niceDate(o.day));
+  grades.forEach(([k, l]) => row(l.toUpperCase(), galText(o[k]) + ' gal'));
+  row('TOTAL', galText(orderTotal(o)) + ' gal', { big: 1 });
+  row('STATUS', ORDER_STATUS[o.status] || o.status || 'New', { pill: STC[o.status] || '#1d5fd1' });
+  row('ENTERED BY', nameOf(o.created_by));
+  if (noteLines.length) {
+    y += 50; const h = noteLines.length * 54 + 40; box(P, y - 20, W - 2 * P, h, 22, '#eef3f9'); box(P, y - 20, 10, h, 5, '#0b3d2e');
+    g.fillStyle = '#14202e'; g.font = '40px ' + F; let yy = y + 28; for (const line of noteLines) { g.fillText(line, P + 36, yy); yy += 54; }
+  }
+  g.fillStyle = '#64748b'; g.font = '30px ' + F; g.fillText('King Energy  ·  ' + niceDate(today()), P, H - 56);
+  return canvasBlob(cv);
+}
+function shareCard(k, id) {
+  let file = null;
+  try {
+    if (k === 'order') { const o = S.orders.find(x => x.id === id); if (o) file = new File([orderCardBlob(o)], 'fuel-order-' + (o.store_name || '').replace(/[^\w]+/g, '-') + '.png', { type: 'image/png' }); }
+    else { const t = taskById(id); if (t) file = new File([taskCardBlob(t)], 'king-energy-task.png', { type: 'image/png' }); }
+  } catch (e) { console.warn(e); }
+  if (!file) { toast('Could not make the picture.'); return; }
+  if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+    navigator.share({ files: [file] }).catch(e => { if (!e || e.name !== 'AbortError') { console.warn(e); toast('Sharing did not work on this phone.'); } });
+    return;
+  }
+  const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name; a.click(); toast('Picture saved. Attach it in WhatsApp.');
+}
 window.KE_card = id => taskCardBlob(taskById(id));
+window.KE_orderCard = o => orderCardBlob(o);
 
 /* ---------- phone alerts ---------- */
 const PUSH_OK = !DEMO && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
@@ -431,7 +484,7 @@ function card(t) {
     <div class="card-title">${esc(t.title)}</div>
     <div class="card-meta"><span>👤 ${t.owner ? esc(nameOf(t.owner)) : 'Nobody'}</span>
       <span>📅 ${t.due ? esc(dueText(t)) : 'No date'}</span>${nc ? `<span>💬 ${nc}</span>` : ''}${nf ? `<span>📎 ${nf}</span>` : ''}</div>
-    ${!t.owner && t.status !== 'done' ? `<button class="btn go take" data-act="take" data-id="${t.id}">I'll take it</button>` : ''}
+    <p class="card-share">${!t.owner && t.status !== 'done' ? `<button class="btn go take" data-act="take" data-id="${t.id}">I'll take it</button> ` : ''}${waButton('task', t.id, '💬 Share')}</p>
   </div>`;
 }
 
@@ -498,7 +551,8 @@ function orderCard(o) {
     <div class="card-top"><span class="pill ${ORDER_PILL[o.status] || ''}">${ORDER_STATUS[o.status] || esc(o.status)}</span><span class="pill">📅 ${esc(niceDate(o.day))}</span></div>
     <div class="card-title">${esc(o.store_name)}</div>
     <div class="tags" style="--h:150">${parts}</div>
-    <div class="card-meta"><span>⛽ ${galText(orderTotal(o))} gal total</span><span>✍️ ${esc(nameOf(o.created_by))}</span></div></div>`;
+    <div class="card-meta"><span>⛽ ${galText(orderTotal(o))} gal total</span><span>✍️ ${esc(nameOf(o.created_by))}</span></div>
+    <p class="card-share">${waButton('order', o.id, '💬 Share')}</p></div>`;
 }
 function ordersView() {
   const list = S.orders.slice().sort((a, b) => (b.day || '').localeCompare(a.day || '') || (b.created_at || '').localeCompare(a.created_at || ''));
@@ -518,7 +572,7 @@ function orderSheet(sh) {
   <form class="sheet-body" id="orderForm">
     ${!can ? '<div class="banner">Only a partner can change an order after it is saved.</div>' : ''}
     ${!stores.length ? '<div class="banner">There are no stores yet. A partner needs to add a store first.</div>' : ''}
-    ${o ? `<p class="row"><span class="pill ${ORDER_PILL[o.status] || ''}">${ORDER_STATUS[o.status]}</span><span class="muted">Entered by ${esc(nameOf(o.created_by))} · ${esc(niceTime(o.created_at))}</span></p><p>${waButton(orderWaText(o))}</p>` : ''}
+    ${o ? `<p class="row"><span class="pill ${ORDER_PILL[o.status] || ''}">${ORDER_STATUS[o.status]}</span><span class="muted">Entered by ${esc(nameOf(o.created_by))} · ${esc(niceTime(o.created_at))}</span></p><p>${waButton('order', o.id)}</p>` : ''}
     <label class="f">Store</label><select class="in" name="store_id" required${dis}><option value="">Pick a store…</option>${stores.map(s => `<option value="${s.id}"${d.store_id === s.id ? ' selected' : ''}>${esc(s.name)}${s.address ? ' — ' + esc(s.address) : ''}</option>`).join('')}</select>
     <label class="f">Delivery date</label><input class="in" type="date" name="day" value="${esc(d.day)}" required${dis}>
     <div class="group"><div class="group-t">⛽ Gallons</div>
@@ -1202,24 +1256,23 @@ function newTaskSheet(d) {
 }
 
 const appLink = () => location.origin + location.pathname;
-const waButton = text => `<a class="btn wa" href="https://wa.me/?text=${encodeURIComponent(text)}" target="_blank" rel="noopener">💬 Send on WhatsApp</a>`;
+const waButton = (k, id, label) => `<button type="button" class="btn wa" data-act="share-card" data-k="${k}" data-id="${id}">${label || '💬 Share on WhatsApp'}</button>`;
 const taskWaText = t => `*King Energy task*\n${t.title}\nOwner: ${t.owner ? nameOf(t.owner) : 'NOBODY YET'}\nDue: ${t.due ? niceDate(t.due) : 'no date'}\nStatus: ${STATUS[t.status]}${isLate(t) ? ' (LATE)' : ''}${t.details ? '\n' + t.details : ''}\n${appLink()}`;
 const orderWaText = o => `*King Energy fuel order*\nStore: ${o.store_name}\n${orderFacts(o)}\nStatus: ${ORDER_STATUS[o.status] || o.status}\nEntered by ${nameOf(o.created_by)}\n${appLink()}`;
-function askShare(title, text) {
+function askShare(title, k, id) {
   const old = $('#askShare'); if (old) old.remove();
   const box = document.createElement('div'); box.id = 'askShare';
   box.innerHTML = `<div class="ask-card"><div class="ask-t">✅ ${esc(title)}</div><p>Send it on WhatsApp now so nobody misses it?</p>
-    <p>${waButton(text)}</p><p><button type="button" class="btn wide" data-act="ask-close">Not now</button></p></div>`;
+    <p>${waButton(k, id)}</p><p><button type="button" class="btn wide" data-act="ask-close">Not now</button></p></div>`;
   document.body.appendChild(box);
-  box.querySelector('a.wa').addEventListener('click', () => setTimeout(() => box.remove(), 300));
 }
 function taskSheet(t) {
   if (!t) return '';
   const evs = S.events.filter(e => e.task_id === t.id).sort((a, b) => a.created_at.localeCompare(b.created_at));
   const files = S.files.filter(f => f.task_id === t.id);
-  return `<div class="sheet-head"><button data-act="close">← Back</button><button data-act="share" data-id="${t.id}">Share to WhatsApp</button></div>
+  return `<div class="sheet-head"><button data-act="close">← Back</button><span>Task</span><span></span></div>
   <div class="sheet-body">
-    <p>${waButton(taskWaText(t))}</p>
+    <p>${waButton('task', t.id)}</p>
     ${isLate(t) ? `<div class="banner" style="background:var(--red-bg);border-color:var(--red)">This task is ${esc(dueText(t))}.</div>` : ''}
     ${!t.owner && t.status !== 'done' ? '<div class="banner">🚨 Nobody owns this yet. Pick one person below.</div>' : ''}
     <input class="in title-in" data-field="title" value="${esc(t.title)}">
@@ -1417,6 +1470,7 @@ const ACT = {
     closeSheet(); await safe(() => db.remove('payments', p.id), 'Could not delete the payment.'); toast('Payment deleted.'); refresh();
   },
   'ask-close': () => { const b = $('#askShare'); if (b) b.remove(); },
+  'share-card': el => { shareCard(el.dataset.k, el.dataset.id); const b = $('#askShare'); if (b) setTimeout(() => b.remove(), 400); },
   'new-dlv': () => openSheet({ type: 'dlv', id: null, draft: dlvDraft(null) }),
   'open-dlv': el => { const x = S.deliveries.find(r => r.id === el.dataset.id); if (x) openSheet({ type: 'dlv', id: x.id, draft: dlvDraft(x) }); },
   'dlv-photo': () => { const x = S.deliveries.find(r => r.id === S.sheet.id); if (x) openViewer({ id: x.id, name: x.photo_name || ('BOL ' + x.bol_number + '.jpg'), path: x.photo_path, data: x.photo_data }); },
@@ -1566,7 +1620,7 @@ document.addEventListener('submit', async e => {
       await logActivity('task_new', 'New task: ' + t.title, taskFacts(t) + (t.details ? '\nDetails: ' + t.details : ''));
     });
     if (!owner) toast('Saved. Nobody owns it yet.');
-    askShare('Task saved', taskWaText(t));
+    askShare('Task saved', 'task', t.id);
   } else if (f.id === 'storeForm') {
     const d = readStoreForm();
     const extra = d.extra.filter(x => x.label || x.value).map(x => ({ label: x.label || 'Note', value: x.value }));
@@ -1613,7 +1667,7 @@ document.addEventListener('submit', async e => {
       const row = { id: uid(), ...base, status: 'new', created_by: S.me, created_at: stamp };
       S.orders.push(row); S.tab = 'orders'; renderMain();
       const okay = await safe(async () => { await db.insert('fuel_orders', row); return true; }, 'The order was NOT saved. Check your internet and try again.');
-      if (okay) { toast('Order saved. The partners are being told.'); ping('order_new', { order_id: row.id }); askShare('Order saved', orderWaText(row)); setTimeout(refresh, 2500); } else refresh();
+      if (okay) { toast('Order saved. The partners are being told.'); ping('order_new', { order_id: row.id }); askShare('Order saved', 'order', row.id); setTimeout(refresh, 2500); } else refresh();
     } else {
       Object.assign(old, base); renderMain();
       await safe(() => db.update('fuel_orders', old.id, base), 'The changes were NOT saved.');

@@ -259,3 +259,5 @@ label.chk { display: inline-flex; align-items: center; gap: 4px; margin: 6px 12p
 #askShare .ask-card { background: var(--card, #fff); color: var(--text, #111); border-radius: 14px; padding: 18px; width: 100%; max-width: 380px; text-align: center; box-shadow: 0 8px 30px rgba(0,0,0,.3); }
 #askShare .ask-t { font-size: 20px; font-weight: 800; }
 #askShare .btn.wa { width: 100%; padding: 14px; font-size: 17px; box-sizing: border-box; }
+.card-share { margin: 8px 0 0; display: flex; gap: 8px; flex-wrap: wrap; }
+.card-share .btn.wa { padding: 6px 14px; font-size: 14px; }
